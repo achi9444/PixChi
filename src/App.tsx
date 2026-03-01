@@ -52,7 +52,9 @@ type PaletteJson = {
 
 const MAX_GRID_SIZE = 10000;
 const PIXCHI_META_PREFIX = 'PIXCHI_META_V1:';
-const PDF_FONT_URL = '/fonts/NotoSansTC-VF.ttf';
+const ASSET_BASE_URL = import.meta.env.BASE_URL;
+const PDF_FONT_URL = `${ASSET_BASE_URL}fonts/NotoSansTC-VF.ttf`;
+const PALETTE_JSON_URL = `${ASSET_BASE_URL}color-palette.json`;
 let pdfRuntimePromise: Promise<{
   PDFDocument: any;
   StandardFonts: any;
@@ -169,7 +171,7 @@ export default function App() {
 
   const loadPalette = useCallback(async () => {
     try {
-      const res = await fetch(`/color-palette.json?t=${Date.now()}`, { cache: 'no-cache' });
+      const res = await fetch(`${PALETTE_JSON_URL}?t=${Date.now()}`, { cache: 'no-cache' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as PaletteJson;
       const parsed = (data.groups ?? []).map((g) => ({
