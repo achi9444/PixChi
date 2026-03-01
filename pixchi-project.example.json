@@ -1,0 +1,38 @@
+﻿{
+  "project": {
+    "id": "p_demo_001",
+    "name": "demo-bunny",
+    "groupName": "小舞",
+    "mode": "fit",
+    "grid": {
+      "cols": 32,
+      "rows": 32
+    },
+    "image": {
+      "width": 1024,
+      "height": 1024
+    },
+    "convert": {
+      "algorithm": "lab_nearest",
+      "cellColorMethod": "median_rgb",
+      "denoiseLevel": 2,
+      "mergeThreshold": 5
+    }
+  },
+  "result": {
+    "cells": [
+      { "x": 0, "y": 0, "colorName": "A1" },
+      { "x": 1, "y": 0, "colorName": "A1" },
+      { "x": 2, "y": 0, "colorName": "B2" }
+    ],
+    "stats": {
+      "totalBeads": 1024,
+      "totalColors": 28,
+      "colors": [
+        { "name": "A1", "hex": "#FFF7D2", "count": 210, "ratio": 20.51 },
+        { "name": "B2", "hex": "#8ECF53", "count": 98, "ratio": 9.57 }
+      ],
+      "fullListRequired": true
+    }
+  }
+}

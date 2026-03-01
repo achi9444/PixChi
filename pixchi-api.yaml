@@ -1,0 +1,145 @@
+﻿openapi: 3.0.3
+info:
+  title: PixChi API
+  version: 0.1.0
+paths:
+  /api/projects:
+    post:
+      summary: Create project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, groupName, grid, image]
+              properties:
+                name: { type: string }
+                groupName: { type: string }
+                mode: { type: string, enum: [fit, lock, pad] }
+                grid:
+                  type: object
+                  properties:
+                    cols: { type: integer }
+                    rows: { type: integer }
+                image:
+                  type: object
+                  properties:
+                    width: { type: integer }
+                    height: { type: integer }
+      responses:
+        '200':
+          description: ok
+  /api/projects/{id}/convert:
+    post:
+      summary: Convert image to bead grid
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                algorithm: { type: string, enum: [lab_nearest, rgb_nearest, palette_priority] }
+                denoiseLevel: { type: integer, minimum: 0, maximum: 10 }
+                mergeThreshold: { type: number }
+      responses:
+        '200':
+          description: converted
+  /api/projects/{id}/cells:
+    patch:
+      summary: Batch edit cell color names
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                edits:
+                  type: array
+                  items:
+                    type: object
+                    required: [x, y, colorName]
+                    properties:
+                      x: { type: integer }
+                      y: { type: integer }
+                      colorName: { type: string }
+      responses:
+        '200':
+          description: patched
+  /api/projects/{id}/stats:
+    get:
+      summary: Get full color statistics
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: full statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalBeads: { type: integer }
+                  totalColors: { type: integer }
+                  rows: { type: integer }
+                  cols: { type: integer }
+                  colors:
+                    type: array
+                    description: Full list, never truncated.
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        hex: { type: string }
+                        count: { type: integer }
+                        ratio: { type: number }
+                        unitCost: { type: number }
+                        lineTotal: { type: number }
+  /api/projects/{id}/export/pdf:
+    get:
+      summary: Export pattern pdf
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: pdf file
+  /api/projects/{id}/export/csv:
+    get:
+      summary: Export full material csv
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: csv file
+  /api/projects/{id}/quote:
+    get:
+      summary: Quote summary
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: quote totals
