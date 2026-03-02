@@ -84,6 +84,7 @@ export default function App() {
   const [mode, setMode] = useState<LayoutMode>('fit');
   const [strategy, setStrategy] = useState<MatchStrategy>('lab_nearest');
   const [showCode, setShowCode] = useState(true);
+  const [exportScale, setExportScale] = useState<1 | 2 | 3>(2);
   const [editTool, setEditTool] = useState<'pan' | 'paint' | 'erase'>('pan');
   const [zoom, setZoom] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -682,6 +683,7 @@ export default function App() {
         const page = pdfDoc.addPage([pageW, pageH]);
         drawHeader(page, `群組：${activeGroup?.name ?? ''} | 格線：${converted.cols}x${converted.rows}`);
         const fullCanvas = buildExportGridCanvas(converted, showCode, beadMm, {
+          exportScale,
           showRuler: proMode && showRuler,
           showGuide: proMode && showGuide,
           guideEvery
@@ -729,6 +731,7 @@ export default function App() {
             const rowsPart = Math.min(tileRows, converted.rows - startRow);
             const slice = sliceConverted(converted, startCol, startRow, colsPart, rowsPart);
             const tileCanvas = buildExportGridCanvas(slice, showCode, beadMm, {
+              exportScale,
               showRuler: proMode && showRuler,
               showGuide: proMode && showGuide,
               guideEvery
@@ -965,6 +968,14 @@ export default function App() {
           <label className="switch-row">
             顯示色號文字
             <input type="checkbox" checked={showCode} onChange={(e) => setShowCode(e.target.checked)} />
+          </label>
+          <label>
+            匯出清晰度
+            <select value={exportScale} onChange={(e) => setExportScale((Number(e.target.value) as 1 | 2 | 3) || 2)}>
+              <option value={1}>1x（較快）</option>
+              <option value={2}>2x（建議）</option>
+              <option value={3}>3x（最清晰）</option>
+            </select>
           </label>
 
           {proMode && (
@@ -1304,9 +1315,10 @@ function buildExportGridCanvas(
   converted: Converted,
   showCode: boolean,
   beadMm: number,
-  options?: { showRuler?: boolean; showGuide?: boolean; guideEvery?: number }
+  options?: { exportScale?: number; showRuler?: boolean; showGuide?: boolean; guideEvery?: number }
 ) {
-  const pxPerMm = 96 / 25.4;
+  const exportScale = Math.max(1, Math.min(3, Math.floor(options?.exportScale ?? 2)));
+  const pxPerMm = (96 / 25.4) * exportScale;
   const cell = Math.max(2, Math.round(beadMm * pxPerMm));
   const pad = 12;
   const showRuler = !!options?.showRuler;
@@ -1333,11 +1345,17 @@ function buildExportGridCanvas(
     ctx.lineWidth = 1;
     ctx.strokeRect(x, y, cell, cell);
 
-    if (showCode && cell >= 14 && !c.isEmpty) {
+    if (showCode && !c.isEmpty) {
       ctx.fillStyle = pickTextColor(c.hex);
-      ctx.font = `${Math.max(9, Math.floor(cell * 0.35))}px Segoe UI`;
+      const fontSize = Math.max(6, Math.floor(cell * 0.42));
+      ctx.font = `700 ${fontSize}px "Segoe UI", Arial, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.lineWidth = Math.max(1, Math.floor(fontSize * 0.16));
+      ctx.strokeStyle = pickTextColor(c.hex) === '#1a1a1a' ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.55)';
+      ctx.strokeText(c.colorName, x + cell / 2, y + cell / 2);
       ctx.fillText(c.colorName, x + cell / 2, y + cell / 2);
     }
   }
@@ -1452,7 +1470,7 @@ function dataUrlToBytes(dataUrl: string) {
 
 function drawPdfBead(page: any, x: number, y: number, hex: string, rgbFn: (...args: number[]) => any) {
   const [r, g, b] = hexToRgb(hex);
-  page.drawCircle({ x, y, size: 5, color: rgbFn(1, 1, 1), borderColor: rgbFn(r / 255, g / 255, b / 255), borderWidth: 2.2 });
+  page.drawCircle({ x, y, size: 4, color: rgbFn(1, 1, 1), borderColor: rgbFn(r / 255, g / 255, b / 255), borderWidth: 4 });
 }
 
 function toBase64Utf8(text: string) {
