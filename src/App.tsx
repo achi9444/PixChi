@@ -50,11 +50,36 @@ type PaletteJson = {
   }>;
 };
 
+type CropRect = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+};
+
+type CropDragMode = 'new' | 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+
 const MAX_GRID_SIZE = 10000;
 const PIXCHI_META_PREFIX = 'PIXCHI_META_V1:';
+const EMPTY_EDIT_COLOR_NAME = '__EMPTY__';
+const EMPTY_EDIT_COLOR = { name: '無', hex: '#FFFFFF' };
 const ASSET_BASE_URL = import.meta.env.BASE_URL;
 const PDF_FONT_URL = `${ASSET_BASE_URL}fonts/NotoSansTC-VF.ttf`;
 const PALETTE_JSON_URL = `${ASSET_BASE_URL}color-palette.json`;
+const PUBLIC_PRICING_PRESET = {
+  unitCost: 0.08,
+  lossRate: 5,
+  labor: 80,
+  fixedCost: 20,
+  margin: 20,
+  complexityPerBead: 0.12
+};
+const COMPLEXITY_CAP_TIERS: Array<{ maxBeads: number; cap: number }> = [
+  { maxBeads: 500, cap: 30 },
+  { maxBeads: 1200, cap: 80 },
+  { maxBeads: 2500, cap: 180 },
+  { maxBeads: Number.POSITIVE_INFINITY, cap: 300 }
+];
 let pdfRuntimePromise: Promise<{
   PDFDocument: any;
   StandardFonts: any;
@@ -69,15 +94,21 @@ export default function App() {
   const focusColorMenuRef = useRef<HTMLDivElement | null>(null);
   const pdfImportRef = useRef<HTMLInputElement | null>(null);
   const renderMetaRef = useRef({ ox: 0, oy: 0, cell: 1 });
+  const imagePreviewMetaRef = useRef({ ox: 0, oy: 0, scale: 1, drawW: 0, drawH: 0 });
   const isPointerDownRef = useRef(false);
   const lastDragCellIdxRef = useRef<number | null>(null);
   const panLastPointRef = useRef<{ x: number; y: number } | null>(null);
+  const cropDragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const cropDragModeRef = useRef<CropDragMode | null>(null);
+  const cropStartRectRef = useRef<CropRect | null>(null);
+  const isCropDraggingRef = useRef(false);
 
   const [projectName, setProjectName] = useState('未命名專案');
   const [groups, setGroups] = useState<PaletteGroup[]>([]);
   const [activeGroupName, setActiveGroupName] = useState('');
   const [imageBitmap, setImageBitmap] = useState<ImageBitmap | null>(null);
   const [imageMeta, setImageMeta] = useState('-');
+  const [cropRect, setCropRect] = useState<CropRect | null>(null);
 
   const [cols, setCols] = useState(32);
   const [rows, setRows] = useState(32);
@@ -85,6 +116,8 @@ export default function App() {
   const [strategy, setStrategy] = useState<MatchStrategy>('lab_nearest');
   const [showCode, setShowCode] = useState(true);
   const [exportScale, setExportScale] = useState<1 | 2 | 3>(2);
+  const [cropToolEnabled, setCropToolEnabled] = useState(true);
+  const [cropHoverMode, setCropHoverMode] = useState<CropDragMode | null>(null);
   const [editTool, setEditTool] = useState<'pan' | 'paint' | 'erase'>('pan');
   const [zoom, setZoom] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -104,9 +137,12 @@ export default function App() {
   const [focusColorSearch, setFocusColorSearch] = useState('');
   const [focusColorMenuOpen, setFocusColorMenuOpen] = useState(false);
   const [statsSearch, setStatsSearch] = useState('');
-  const [unitCost, setUnitCost] = useState(0);
-  const [labor, setLabor] = useState(0);
-  const [margin, setMargin] = useState(0);
+  const [proUnitCost, setProUnitCost] = useState(PUBLIC_PRICING_PRESET.unitCost);
+  const [proLossRate, setProLossRate] = useState(PUBLIC_PRICING_PRESET.lossRate);
+  const [proHourlyRate, setProHourlyRate] = useState(160);
+  const [proWorkHours, setProWorkHours] = useState(1);
+  const [proFixedCost, setProFixedCost] = useState(PUBLIC_PRICING_PRESET.fixedCost);
+  const [proMargin, setProMargin] = useState(PUBLIC_PRICING_PRESET.margin);
 
   const [converted, setConverted] = useState<Converted | null>(null);
   const [gridMeta, setGridMeta] = useState('-');
@@ -127,10 +163,16 @@ export default function App() {
     return colors.filter((c) => !q || c.name.toLowerCase().includes(q) || c.hex.toLowerCase().includes(q));
   }, [activeGroup, paletteSearch]);
 
-  const selectedEditColor = useMemo(
-    () => activeGroup?.colors.find((c) => c.name === editColorName) ?? null,
-    [activeGroup, editColorName]
-  );
+  const selectedEditColor = useMemo(() => {
+    if (editColorName === EMPTY_EDIT_COLOR_NAME) return EMPTY_EDIT_COLOR;
+    return activeGroup?.colors.find((c) => c.name === editColorName) ?? null;
+  }, [activeGroup, editColorName]);
+
+  const effectiveUnitCost = useMemo(() => {
+    const base = proMode ? proUnitCost : PUBLIC_PRICING_PRESET.unitCost;
+    const lossRate = proMode ? proLossRate : PUBLIC_PRICING_PRESET.lossRate;
+    return base * (1 + lossRate / 100);
+  }, [proMode, proUnitCost, proLossRate]);
 
   const statsRows = useMemo(() => {
     if (!converted) return [];
@@ -147,9 +189,9 @@ export default function App() {
       .map((r) => ({
         ...r,
         ratio: (r.count / total) * 100,
-        lineCost: r.count * unitCost
+        lineCost: r.count * effectiveUnitCost
       }));
-  }, [converted, unitCost]);
+  }, [converted, effectiveUnitCost]);
 
   const filteredStatsRows = useMemo(() => {
     const q = statsSearch.trim().toLowerCase();
@@ -167,8 +209,60 @@ export default function App() {
   );
 
   const totalBeads = converted?.cells.filter((c) => !c.isEmpty).length ?? 0;
-  const estCost = statsRows.reduce((acc, row) => acc + row.lineCost, 0);
-  const quotePrice = (estCost + labor) * (1 + margin / 100);
+  const complexityScore = useMemo(() => {
+    if (!converted || totalBeads <= 0) return 0;
+
+    let transitions = 0;
+    let neighborChecks = 0;
+    for (let y = 0; y < converted.rows; y++) {
+      for (let x = 0; x < converted.cols; x++) {
+        const idx = y * converted.cols + x;
+        const cur = converted.cells[idx];
+        if (!cur || cur.isEmpty) continue;
+        if (x + 1 < converted.cols) {
+          const right = converted.cells[idx + 1];
+          if (right && !right.isEmpty) {
+            neighborChecks += 1;
+            if (right.colorName !== cur.colorName) transitions += 1;
+          }
+        }
+        if (y + 1 < converted.rows) {
+          const down = converted.cells[idx + converted.cols];
+          if (down && !down.isEmpty) {
+            neighborChecks += 1;
+            if (down.colorName !== cur.colorName) transitions += 1;
+          }
+        }
+      }
+    }
+
+    const transitionRate = neighborChecks > 0 ? transitions / neighborChecks : 0;
+    const colorCount = statsRows.length;
+    const tinyColorCount = statsRows.filter((r) => r.count <= Math.max(3, Math.floor(totalBeads * 0.01))).length;
+    const tinyColorRatio = colorCount > 0 ? tinyColorCount / colorCount : 0;
+
+    const colorScore = clamp01((colorCount - 4) / 24);
+    const transitionScore = clamp01((transitionRate - 0.08) / 0.42);
+    const tinyColorScore = clamp01((tinyColorRatio - 0.15) / 0.5);
+    return clamp01(0.45 * transitionScore + 0.35 * colorScore + 0.2 * tinyColorScore);
+  }, [converted, statsRows, totalBeads]);
+
+  const complexityCap = useMemo(() => getComplexityCap(totalBeads), [totalBeads]);
+  const complexityFeeRaw = useMemo(
+    () => totalBeads * PUBLIC_PRICING_PRESET.complexityPerBead * complexityScore,
+    [totalBeads, complexityScore]
+  );
+  const complexityFee = useMemo(() => {
+    if (proMode) return 0;
+    return Math.min(complexityFeeRaw, complexityCap);
+  }, [proMode, complexityFeeRaw, complexityCap]);
+
+  const materialCost = statsRows.reduce((acc, row) => acc + row.lineCost, 0);
+  const laborCost = proMode ? proHourlyRate * proWorkHours : PUBLIC_PRICING_PRESET.labor;
+  const fixedCost = proMode ? proFixedCost : PUBLIC_PRICING_PRESET.fixedCost;
+  const marginRate = proMode ? proMargin : PUBLIC_PRICING_PRESET.margin;
+  const subtotal = materialCost + laborCost + fixedCost + complexityFee;
+  const quotePrice = subtotal * (1 + marginRate / 100);
 
   const loadPalette = useCallback(async () => {
     try {
@@ -214,6 +308,7 @@ export default function App() {
       setEditColorName('');
       return;
     }
+    if (editColorName === EMPTY_EDIT_COLOR_NAME) return;
     if (!colors.some((c) => c.name === editColorName)) setEditColorName(colors[0].name);
   }, [activeGroup, editColorName]);
 
@@ -249,8 +344,70 @@ export default function App() {
     canvas.width = width;
     canvas.height = height;
 
-    if (!converted) {
+    if (!converted || (cropToolEnabled && imageBitmap)) {
       ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      if (!imageBitmap) return;
+
+      const pad = 12;
+      const drawAreaW = Math.max(1, width - pad * 2);
+      const drawAreaH = Math.max(1, height - pad * 2);
+      const scale = Math.min(drawAreaW / imageBitmap.width, drawAreaH / imageBitmap.height);
+      const drawW = Math.max(1, Math.floor(imageBitmap.width * scale));
+      const drawH = Math.max(1, Math.floor(imageBitmap.height * scale));
+      const ox = Math.floor((width - drawW) / 2);
+      const oy = Math.floor((height - drawH) / 2);
+      imagePreviewMetaRef.current = { ox, oy, scale, drawW, drawH };
+
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(imageBitmap, ox, oy, drawW, drawH);
+
+      if (cropRect) {
+        const cx = Math.round(ox + cropRect.x * scale);
+        const cy = Math.round(oy + cropRect.y * scale);
+        const cw = Math.max(1, Math.round(cropRect.w * scale));
+        const ch = Math.max(1, Math.round(cropRect.h * scale));
+        const right = ox + drawW;
+        const bottom = oy + drawH;
+        const cropRight = cx + cw;
+        const cropBottom = cy + ch;
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+        // Draw 4 masks around crop area (do not clear image pixels).
+        ctx.fillRect(ox, oy, drawW, Math.max(0, cy - oy)); // top
+        ctx.fillRect(ox, cy, Math.max(0, cx - ox), Math.max(0, ch)); // left
+        ctx.fillRect(cropRight, cy, Math.max(0, right - cropRight), Math.max(0, ch)); // right
+        ctx.fillRect(ox, cropBottom, drawW, Math.max(0, bottom - cropBottom)); // bottom
+        const isMoveHover = cropToolEnabled && cropHoverMode === 'move';
+        ctx.strokeStyle = cropToolEnabled ? '#d66d5b' : '#8f8a84';
+        ctx.lineWidth = isMoveHover ? 3 : 2;
+        ctx.strokeRect(cx + 0.5, cy + 0.5, Math.max(0, cw - 1), Math.max(0, ch - 1));
+        if (cropToolEnabled) {
+          const hs = 5;
+          const handles = [
+            { mode: 'nw', x: cx, y: cy },
+            { mode: 'n', x: cx + cw / 2, y: cy },
+            { mode: 'ne', x: cx + cw, y: cy },
+            { mode: 'w', x: cx, y: cy + ch / 2 },
+            { mode: 'e', x: cx + cw, y: cy + ch / 2 },
+            { mode: 'sw', x: cx, y: cy + ch },
+            { mode: 's', x: cx + cw / 2, y: cy + ch },
+            { mode: 'se', x: cx + cw, y: cy + ch }
+          ];
+          for (const h of handles) {
+            const hx = Math.round(h.x);
+            const hy = Math.round(h.y);
+            const isHover = cropHoverMode === (h.mode as CropDragMode);
+            ctx.fillStyle = isHover ? '#d66d5b' : '#ffffff';
+            ctx.strokeStyle = '#d66d5b';
+            ctx.lineWidth = isHover ? 2 : 1.5;
+            ctx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
+            ctx.strokeRect(hx - hs + 0.5, hy - hs + 0.5, hs * 2 - 1, hs * 2 - 1);
+          }
+        }
+        ctx.restore();
+      }
       return;
     }
 
@@ -332,7 +489,7 @@ export default function App() {
       }
       ctx.restore();
     }
-  }, [converted, showCode, focusColorName, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery]);
+  }, [converted, imageBitmap, cropRect, cropToolEnabled, cropHoverMode, showCode, focusColorName, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery]);
 
   useEffect(() => {
     drawGrid();
@@ -349,9 +506,26 @@ export default function App() {
       isPointerDownRef.current = false;
       lastDragCellIdxRef.current = null;
       panLastPointRef.current = null;
+      isCropDraggingRef.current = false;
+      cropDragStartRef.current = null;
+      cropDragModeRef.current = null;
+      cropStartRectRef.current = null;
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      if (!isCropDraggingRef.current) return;
+      isCropDraggingRef.current = false;
+      cropDragStartRef.current = null;
+      cropDragModeRef.current = null;
+      if (cropStartRectRef.current) setCropRect(cropStartRectRef.current);
+      cropStartRectRef.current = null;
     };
     window.addEventListener('mouseup', onMouseUp);
-    return () => window.removeEventListener('mouseup', onMouseUp);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('keydown', onKeyDown);
+    };
   }, []);
 
   useEffect(() => {
@@ -377,10 +551,22 @@ export default function App() {
   const onImageSelected = async (file: File | null) => {
     if (!file) return;
     const img = await fileToImage(file);
-    const bitmap = await createImageBitmap(file);
+    // Flatten to opaque white first to avoid dark fringes from transparent pixels.
+    const flattenCanvas = document.createElement('canvas');
+    flattenCanvas.width = img.width;
+    flattenCanvas.height = img.height;
+    const fctx = flattenCanvas.getContext('2d')!;
+    fctx.fillStyle = '#ffffff';
+    fctx.fillRect(0, 0, img.width, img.height);
+    fctx.drawImage(img, 0, 0);
+    const bitmap = await createImageBitmap(flattenCanvas);
     setImageBitmap(bitmap);
+    setConverted(null);
+    setGridMeta('-');
     setCols(img.width);
     setRows(img.height);
+    setCropRect({ x: 0, y: 0, w: img.width, h: img.height });
+    setCropToolEnabled(true);
     setZoom(1);
     setPanOffset({ x: 0, y: 0 });
     setImageMeta(`來源圖：${img.width} x ${img.height}`);
@@ -395,8 +581,17 @@ export default function App() {
 
     const safeCols = clampInt(cols, 1, MAX_GRID_SIZE);
     const safeRows = clampInt(rows, 1, MAX_GRID_SIZE);
-    const dims = adjustGridByMode(safeCols, safeRows, imageBitmap.width, imageBitmap.height, mode);
-    const { processedCanvas, info } = buildProcessedCanvas(imageBitmap, dims.cols, dims.rows, mode);
+
+    let sourceBitmap = imageBitmap;
+    const hasCrop =
+      !!cropRect &&
+      (cropRect.x !== 0 || cropRect.y !== 0 || cropRect.w !== imageBitmap.width || cropRect.h !== imageBitmap.height);
+    if (hasCrop && cropRect) {
+      sourceBitmap = await createImageBitmap(imageBitmap, cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+    }
+
+    const dims = adjustGridByMode(safeCols, safeRows, sourceBitmap.width, sourceBitmap.height, mode);
+    const { processedCanvas, info } = buildProcessedCanvas(sourceBitmap, dims.cols, dims.rows, mode);
 
     const imgData = processedCanvas
       .getContext('2d')!
@@ -415,8 +610,8 @@ export default function App() {
       cols: dims.cols,
       rows: dims.rows,
       mode,
-      sourceW: imageBitmap.width,
-      sourceH: imageBitmap.height,
+      sourceW: sourceBitmap.width,
+      sourceH: sourceBitmap.height,
       processInfo: info,
       cells
     });
@@ -426,6 +621,8 @@ export default function App() {
     setUndoStack([]);
     setRedoStack([]);
     setLastPickedOldColor(null);
+    setCropToolEnabled(false);
+    setImageMeta(`來源圖：${sourceBitmap.width} x ${sourceBitmap.height}`);
     setZoom(1);
     setPanOffset({ x: 0, y: 0 });
     setStatusText('轉換完成，可直接修色與匯出。');
@@ -451,26 +648,86 @@ export default function App() {
     return cy * converted.cols + cx;
   };
 
+  const getPreviewPointer = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !imageBitmap) return null;
+    const rect = canvas.getBoundingClientRect();
+    const canvasX = (clientX - rect.left) * (canvas.width / rect.width);
+    const canvasY = (clientY - rect.top) * (canvas.height / rect.height);
+    const meta = imagePreviewMetaRef.current;
+    if (canvasX < meta.ox || canvasY < meta.oy || canvasX > meta.ox + meta.drawW || canvasY > meta.oy + meta.drawH) return null;
+    const imageX = Math.min(imageBitmap.width - 1, Math.max(0, Math.floor((canvasX - meta.ox) / meta.scale)));
+    const imageY = Math.min(imageBitmap.height - 1, Math.max(0, Math.floor((canvasY - meta.oy) / meta.scale)));
+    return { canvasX, canvasY, imageX, imageY };
+  };
+
+  const getCropDragModeAt = (canvasX: number, canvasY: number): CropDragMode | null => {
+    if (!cropRect) return null;
+    const meta = imagePreviewMetaRef.current;
+    const x = meta.ox + cropRect.x * meta.scale;
+    const y = meta.oy + cropRect.y * meta.scale;
+    const w = Math.max(1, cropRect.w * meta.scale);
+    const h = Math.max(1, cropRect.h * meta.scale);
+    const right = x + w;
+    const bottom = y + h;
+    const edgePad = 14;
+    const near = (ax: number, ay: number) => Math.abs(canvasX - ax) <= edgePad && Math.abs(canvasY - ay) <= edgePad;
+    if (near(x, y)) return 'nw';
+    if (near(right, y)) return 'ne';
+    if (near(x, bottom)) return 'sw';
+    if (near(right, bottom)) return 'se';
+    if (Math.abs(canvasX - x) <= edgePad && canvasY >= y && canvasY <= bottom) return 'w';
+    if (Math.abs(canvasX - right) <= edgePad && canvasY >= y && canvasY <= bottom) return 'e';
+    if (Math.abs(canvasY - y) <= edgePad && canvasX >= x && canvasX <= right) return 'n';
+    if (Math.abs(canvasY - bottom) <= edgePad && canvasX >= x && canvasX <= right) return 's';
+    if (canvasX >= x && canvasX <= right && canvasY >= y && canvasY <= bottom) return 'move';
+    return null;
+  };
+
+  const cursorByCropMode = (mode: CropDragMode | null) => {
+    if (!mode) return 'crosshair';
+    if (mode === 'move') return 'move';
+    if (mode === 'n' || mode === 's') return 'ns-resize';
+    if (mode === 'e' || mode === 'w') return 'ew-resize';
+    if (mode === 'nw' || mode === 'se') return 'nwse-resize';
+    if (mode === 'ne' || mode === 'sw') return 'nesw-resize';
+    return 'crosshair';
+  };
+
+  const normalizeCropRect = (left: number, top: number, right: number, bottom: number, bitmap: ImageBitmap): CropRect => {
+    let l = Math.min(left, right);
+    let r = Math.max(left, right);
+    let t = Math.min(top, bottom);
+    let b = Math.max(top, bottom);
+    l = Math.max(0, Math.min(l, bitmap.width - 1));
+    r = Math.max(0, Math.min(r, bitmap.width - 1));
+    t = Math.max(0, Math.min(t, bitmap.height - 1));
+    b = Math.max(0, Math.min(b, bitmap.height - 1));
+    return { x: l, y: t, w: Math.max(1, r - l + 1), h: Math.max(1, b - t + 1) };
+  };
+
   const applyEditByIndex = (idx: number) => {
     if (!converted) return;
+    const isPaintToEmpty = editTool === 'paint' && editColorName === EMPTY_EDIT_COLOR_NAME;
     const chosen =
-      editTool === 'paint' && activeGroup && editColorName
+      editTool === 'paint' && activeGroup && editColorName && !isPaintToEmpty
         ? activeGroup.colors.find((c) => c.name === editColorName) ?? null
         : null;
-    if (editTool === 'paint' && !chosen) return;
+    if (editTool === 'paint' && !isPaintToEmpty && !chosen) return;
 
     const prev = converted.cells[idx];
     if (!prev) return;
 
     const before = { ...prev };
     const after =
-      editTool === 'erase'
+      editTool === 'erase' || isPaintToEmpty
         ? { ...prev, colorName: '', hex: '#FFFFFF', isEmpty: true }
         : { ...prev, colorName: chosen!.name, hex: chosen!.hex, isEmpty: false };
-    if (editTool === 'paint' && !before.isEmpty && before.colorName === chosen!.name) return;
+    if (editTool === 'paint' && !isPaintToEmpty && !before.isEmpty && before.colorName === chosen!.name) return;
     if (editTool === 'erase' && before.isEmpty) return;
+    if (isPaintToEmpty && before.isEmpty) return;
 
-    setLastPickedOldColor(editTool === 'paint' && !before.isEmpty ? before.colorName : null);
+    setLastPickedOldColor(editTool === 'paint' && !isPaintToEmpty && !before.isEmpty ? before.colorName : null);
     pushUndo([{ idx, before, after }]);
     setConverted((old) => {
       if (!old) return old;
@@ -481,6 +738,8 @@ export default function App() {
   };
 
   const onCanvasClick = (ev: React.MouseEvent<HTMLCanvasElement>) => {
+    if (cropToolEnabled && imageBitmap) return;
+    if (!converted) return;
     if (editTool === 'pan') return;
     const idx = getCellIndexByPointer(ev.clientX, ev.clientY);
     if (idx == null) return;
@@ -488,6 +747,21 @@ export default function App() {
   };
 
   const onCanvasMouseDown = (ev: React.MouseEvent<HTMLCanvasElement>) => {
+    if (cropToolEnabled && imageBitmap) {
+      const p = getPreviewPointer(ev.clientX, ev.clientY);
+      if (!p) return;
+      const mode = getCropDragModeAt(p.canvasX, p.canvasY) ?? 'new';
+      setCropHoverMode(mode);
+      isCropDraggingRef.current = true;
+      cropDragModeRef.current = mode;
+      cropDragStartRef.current = { x: p.imageX, y: p.imageY };
+      cropStartRectRef.current = cropRect ? { ...cropRect } : null;
+      if (mode === 'new') {
+        setCropRect({ x: p.imageX, y: p.imageY, w: 1, h: 1 });
+      }
+      return;
+    }
+
     isPointerDownRef.current = true;
     lastDragCellIdxRef.current = null;
     if (editTool === 'pan') {
@@ -502,6 +776,110 @@ export default function App() {
   };
 
   const onCanvasMouseMove = (ev: React.MouseEvent<HTMLCanvasElement>) => {
+    if (cropToolEnabled && imageBitmap) {
+      const p = getPreviewPointer(ev.clientX, ev.clientY);
+      if (!p) {
+        if (!isCropDraggingRef.current && cropHoverMode !== null) setCropHoverMode(null);
+        return;
+      }
+      if (!isCropDraggingRef.current) {
+        const hover = getCropDragModeAt(p.canvasX, p.canvasY);
+        if (hover !== cropHoverMode) setCropHoverMode(hover);
+        return;
+      }
+      const start = cropDragStartRef.current;
+      if (!start) return;
+      const mode = cropDragModeRef.current ?? 'new';
+      if (mode === 'new') {
+        const dx = p.imageX - start.x;
+        const dy = p.imageY - start.y;
+        let left = start.x;
+        let top = start.y;
+        let right = p.imageX;
+        let bottom = p.imageY;
+        if (ev.altKey) {
+          left = start.x - dx;
+          right = start.x + dx;
+          top = start.y - dy;
+          bottom = start.y + dy;
+        }
+        if (ev.shiftKey) {
+          const half = ev.altKey ? Math.max(Math.abs(dx), Math.abs(dy)) : Math.max(Math.abs(dx), Math.abs(dy));
+          if (ev.altKey) {
+            left = start.x - half;
+            right = start.x + half;
+            top = start.y - half;
+            bottom = start.y + half;
+          } else {
+            right = start.x + Math.sign(dx || 1) * half;
+            bottom = start.y + Math.sign(dy || 1) * half;
+          }
+        }
+        setCropRect(normalizeCropRect(left, top, right, bottom, imageBitmap));
+        return;
+      }
+
+      const base = cropStartRectRef.current ?? cropRect;
+      if (!base) return;
+      let left = base.x;
+      let top = base.y;
+      let right = base.x + base.w - 1;
+      let bottom = base.y + base.h - 1;
+      const dx = p.imageX - start.x;
+      const dy = p.imageY - start.y;
+
+      if (mode === 'move') {
+        const maxX = imageBitmap.width - base.w;
+        const maxY = imageBitmap.height - base.h;
+        left = Math.min(maxX, Math.max(0, base.x + dx));
+        top = Math.min(maxY, Math.max(0, base.y + dy));
+        right = left + base.w - 1;
+        bottom = top + base.h - 1;
+      } else {
+        if (ev.altKey) {
+          const cx = base.x + (base.w - 1) / 2;
+          const cy = base.y + (base.h - 1) / 2;
+          if (mode.includes('w')) left = base.x + dx;
+          if (mode.includes('e')) right = base.x + base.w - 1 + dx;
+          if (mode.includes('n')) top = base.y + dy;
+          if (mode.includes('s')) bottom = base.y + base.h - 1 + dy;
+          const halfW = Math.max(Math.abs((mode.includes('w') ? cx - left : 0)), Math.abs((mode.includes('e') ? right - cx : 0)), (base.w - 1) / 2);
+          const halfH = Math.max(Math.abs((mode.includes('n') ? cy - top : 0)), Math.abs((mode.includes('s') ? bottom - cy : 0)), (base.h - 1) / 2);
+          if (mode.includes('w') || mode.includes('e')) {
+            left = Math.round(cx - halfW);
+            right = Math.round(cx + halfW);
+          }
+          if (mode.includes('n') || mode.includes('s')) {
+            top = Math.round(cy - halfH);
+            bottom = Math.round(cy + halfH);
+          }
+        } else {
+          if (mode.includes('w')) left = base.x + dx;
+          if (mode.includes('e')) right = base.x + base.w - 1 + dx;
+          if (mode.includes('n')) top = base.y + dy;
+          if (mode.includes('s')) bottom = base.y + base.h - 1 + dy;
+        }
+
+        if (ev.shiftKey) {
+          const target = Math.max(0.1, base.w / Math.max(1, base.h));
+          const curW = Math.max(1, right - left + 1);
+          const curH = Math.max(1, bottom - top + 1);
+          if (curW / curH > target) {
+            const newW = Math.max(1, Math.round(curH * target));
+            if (mode.includes('w') && !mode.includes('e')) left = right - newW + 1;
+            else right = left + newW - 1;
+          } else {
+            const newH = Math.max(1, Math.round(curW / target));
+            if (mode.includes('n') && !mode.includes('s')) top = bottom - newH + 1;
+            else bottom = top + newH - 1;
+          }
+        }
+      }
+
+      setCropRect(normalizeCropRect(left, top, right, bottom, imageBitmap));
+      return;
+    }
+
     if (!isPointerDownRef.current) return;
     if (editTool === 'pan') {
       const last = panLastPointRef.current;
@@ -523,19 +901,43 @@ export default function App() {
   };
 
   const onCanvasMouseLeave = () => {
+    if (cropToolEnabled && imageBitmap) {
+      isCropDraggingRef.current = false;
+      cropDragStartRef.current = null;
+      cropDragModeRef.current = null;
+      cropStartRectRef.current = null;
+      setCropHoverMode(null);
+      return;
+    }
     if (editTool === 'erase' || editTool === 'paint') lastDragCellIdxRef.current = null;
     if (editTool === 'pan') panLastPointRef.current = null;
   };
 
+  const onCanvasMouseUp = () => {
+    if (cropToolEnabled && imageBitmap) {
+      isCropDraggingRef.current = false;
+      cropDragStartRef.current = null;
+      cropDragModeRef.current = null;
+      cropStartRectRef.current = null;
+      return;
+    }
+    isPointerDownRef.current = false;
+    panLastPointRef.current = null;
+    lastDragCellIdxRef.current = null;
+  };
+
   const replaceAllSameColor = () => {
-    if (!converted || !activeGroup || !editColorName) return;
-    const chosen = activeGroup.colors.find((c) => c.name === editColorName);
-    if (!chosen) return;
+    if (!converted || !editColorName) return;
+    const isPaintToEmpty = editColorName === EMPTY_EDIT_COLOR_NAME;
+    const chosen = isPaintToEmpty
+      ? null
+      : activeGroup?.colors.find((c) => c.name === editColorName) ?? null;
+    if (!isPaintToEmpty && !chosen) return;
     if (!focusColorName) {
       setStatusText('請先選擇焦點色號，再執行全替換。');
       return;
     }
-    if (focusColorName === chosen.name) {
+    if (!isPaintToEmpty && focusColorName === chosen!.name) {
       setStatusText('焦點色與替換色相同，無需替換。');
       return;
     }
@@ -544,7 +946,9 @@ export default function App() {
     const nextCells = converted.cells.map((cell, idx) => {
       if (cell.isEmpty || cell.colorName !== focusColorName) return cell;
       const before = { ...cell };
-      const after = { ...cell, colorName: chosen.name, hex: chosen.hex, isEmpty: false };
+      const after = isPaintToEmpty
+        ? { ...cell, colorName: '', hex: '#FFFFFF', isEmpty: true }
+        : { ...cell, colorName: chosen!.name, hex: chosen!.hex, isEmpty: false };
       changes.push({ idx, before, after });
       return after;
     });
@@ -556,7 +960,7 @@ export default function App() {
 
     pushUndo(changes);
     setConverted({ ...converted, cells: nextCells });
-    setStatusText(`已將焦點色 ${focusColorName} 全部替換為 ${chosen.name}。`);
+    setStatusText(isPaintToEmpty ? `已將焦點色 ${focusColorName} 全部清空。` : `已將焦點色 ${focusColorName} 全部替換為 ${chosen!.name}。`);
   };
 
   const undo = () => {
@@ -841,6 +1245,7 @@ export default function App() {
 
   const resetAll = () => {
     setImageBitmap(null);
+    setCropRect(null);
     setConverted(null);
     setImageMeta('-');
     setGridMeta('-');
@@ -855,6 +1260,10 @@ export default function App() {
     setPanOffset({ x: 0, y: 0 });
     setStatusText('已清空結果。');
   };
+
+  const canvasCursor = !converted && cropToolEnabled && imageBitmap
+    ? cursorByCropMode(isCropDraggingRef.current ? cropDragModeRef.current : cropHoverMode)
+    : undefined;
 
   return (
     <>
@@ -924,6 +1333,27 @@ export default function App() {
               }}
             />
           </label>
+
+          {imageBitmap && (
+            <>
+              <label className="switch-row">
+                裁切工具（在中間畫布拖曳）
+                <input type="checkbox" checked={cropToolEnabled} onChange={(e) => setCropToolEnabled(e.target.checked)} />
+              </label>
+              <div className="row two">
+                <div className="hint">
+                  裁切範圍：x={cropRect?.x ?? 0}, y={cropRect?.y ?? 0}, w={cropRect?.w ?? imageBitmap.width}, h={cropRect?.h ?? imageBitmap.height}
+                </div>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setCropRect({ x: 0, y: 0, w: imageBitmap.width, h: imageBitmap.height })}
+                >
+                  重設裁切
+                </button>
+              </div>
+            </>
+          )}
 
           <div className="row two">
             <label>
@@ -1092,7 +1522,14 @@ export default function App() {
                     if (!editColorMenuOpen) setEditColorMenuOpen(true);
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && filteredEditColors.length) {
+                    if (e.key !== 'Enter') return;
+                    if (paletteSearch.trim() === '無') {
+                      setEditColorName(EMPTY_EDIT_COLOR_NAME);
+                      setEditColorMenuOpen(false);
+                      setPaletteSearch('');
+                      return;
+                    }
+                    if (filteredEditColors.length) {
                       setEditColorName(filteredEditColors[0].name);
                       setEditColorMenuOpen(false);
                       setPaletteSearch('');
@@ -1109,6 +1546,19 @@ export default function App() {
               </div>
               {editColorMenuOpen && (
                 <div className="color-select-menu">
+                  <button
+                    key={EMPTY_EDIT_COLOR_NAME}
+                    type="button"
+                    className="color-select-option"
+                    onClick={() => {
+                      setEditColorName(EMPTY_EDIT_COLOR_NAME);
+                      setEditColorMenuOpen(false);
+                      setPaletteSearch('');
+                    }}
+                  >
+                    <span className="color-pill tiny" style={{ color: EMPTY_EDIT_COLOR.hex }} />
+                    <span>{EMPTY_EDIT_COLOR.name}</span>
+                  </button>
                   {filteredEditColors.map((c) => (
                     <button
                       key={c.name}
@@ -1205,22 +1655,28 @@ export default function App() {
           <div className="canvas-wrap" ref={canvasWrapRef}>
             <canvas
               ref={canvasRef}
-              className={editTool === 'pan' ? 'tool-pan' : editTool === 'erase' ? 'tool-erase' : 'tool-paint'}
+              className={!converted ? (cropToolEnabled ? 'tool-crop' : 'tool-pan') : editTool === 'pan' ? 'tool-pan' : editTool === 'erase' ? 'tool-erase' : 'tool-paint'}
+              style={canvasCursor ? { cursor: canvasCursor } : undefined}
               width={960}
               height={960}
               onClick={onCanvasClick}
               onMouseDown={onCanvasMouseDown}
               onMouseMove={onCanvasMouseMove}
+              onMouseUp={onCanvasMouseUp}
               onMouseLeave={onCanvasMouseLeave}
             />
           </div>
-          <p className="hint">手型可拖曳視圖，滾輪或右上按鈕可縮放；上色與橡皮擦可編輯格子。</p>
+          <p className="hint">
+            {converted
+              ? '手型可拖曳視圖，滾輪或右上按鈕可縮放；上色與橡皮擦可編輯格子。若要再裁切，先開啟左側裁切工具。'
+              : '上傳後會先顯示原圖；裁切工具支援角/邊微調與框內移動（1px）。Shift 鎖比例、Alt 由中心縮放、Esc 取消本次拖曳。'}
+          </p>
           {proMode && <p className="hint">Pro 模式已啟用：可使用尺規與參考線（並會套用到 PDF 匯出）。</p>}
         </section>
 
         <section className="panel stats">
           <h2>完整色號統計</h2>
-          <div className="totals">
+          <div className={`totals ${proMode ? '' : 'compact'}`.trim()}>
             <div>
               <strong>{totalBeads}</strong>
               <span>總顆數</span>
@@ -1229,36 +1685,95 @@ export default function App() {
               <strong>{statsRows.length}</strong>
               <span>總色號數</span>
             </div>
-            <div>
-              <strong>{estCost.toFixed(2)}</strong>
-              <span>預估材料成本</span>
-            </div>
+            {proMode && (
+              <div>
+                <strong>{materialCost.toFixed(2)}</strong>
+                <span>預估材料成本</span>
+              </div>
+            )}
           </div>
 
-          <div className="row two">
-            <label>
-              單顆成本
-              <input
-                type="number"
-                min={0}
-                step={0.01}
-                value={unitCost}
-                onChange={(e) => setUnitCost(Number(e.target.value) || 0)}
-              />
-            </label>
-            <label>
-              人工費
-              <input type="number" min={0} step={1} value={labor} onChange={(e) => setLabor(Number(e.target.value) || 0)} />
-            </label>
-          </div>
-          <label>
-            利潤率 (%)
-            <input type="number" min={0} step={1} value={margin} onChange={(e) => setMargin(Number(e.target.value) || 0)} />
-          </label>
-          <div className="quote-box">
-            <span>建議報價</span>
-            <strong>{quotePrice.toFixed(2)}</strong>
-          </div>
+          {proMode ? (
+            <>
+              <div className="row two">
+                <label>
+                  單顆成本
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={proUnitCost}
+                    onChange={(e) => setProUnitCost(Number(e.target.value) || 0)}
+                  />
+                </label>
+                <label>
+                  損耗率 (%)
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={proLossRate}
+                    onChange={(e) => setProLossRate(Number(e.target.value) || 0)}
+                  />
+                </label>
+              </div>
+              <div className="row two">
+                <label>
+                  時薪
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={proHourlyRate}
+                    onChange={(e) => setProHourlyRate(Number(e.target.value) || 0)}
+                  />
+                </label>
+                <label>
+                  預估工時
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.25}
+                    value={proWorkHours}
+                    onChange={(e) => setProWorkHours(Number(e.target.value) || 0)}
+                  />
+                </label>
+              </div>
+              <div className="row two">
+                <label>
+                  固定成本
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={proFixedCost}
+                    onChange={(e) => setProFixedCost(Number(e.target.value) || 0)}
+                  />
+                </label>
+                <label>
+                  利潤率 (%)
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={proMargin}
+                    onChange={(e) => setProMargin(Number(e.target.value) || 0)}
+                  />
+                </label>
+              </div>
+              <p className="hint">
+                Pro 拆解：材料 {materialCost.toFixed(2)} + 人工 {laborCost.toFixed(2)} + 固定費 {fixedCost.toFixed(2)}，再加上利潤率 {marginRate.toFixed(1)}%
+              </p>
+            </>
+          ) : (
+            <></>
+          )}
+          {converted && (
+            <div className="quote-box">
+              <span>建議報價</span>
+              <strong>{quotePrice.toFixed(2)}</strong>
+            </div>
+          )}
 
           <label>
             統計搜尋（僅過濾顯示，不影響全量匯出）
@@ -1309,6 +1824,15 @@ export default function App() {
 function clampInt(value: number, min: number, max: number) {
   const n = Math.floor(Number(value) || 0);
   return Math.min(max, Math.max(min, n));
+}
+
+function clamp01(value: number) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function getComplexityCap(totalBeads: number) {
+  const tier = COMPLEXITY_CAP_TIERS.find((t) => totalBeads <= t.maxBeads);
+  return tier?.cap ?? COMPLEXITY_CAP_TIERS[COMPLEXITY_CAP_TIERS.length - 1].cap;
 }
 
 function buildExportGridCanvas(
@@ -1714,10 +2238,16 @@ function buildProcessedCanvas(bitmap: ImageBitmap, cols: number, rows: number, m
 
 function extractCellMedianRgb(imageData: ImageData, cellX: number, cellY: number, cols: number, rows: number): [number, number, number] {
   const { data, width, height } = imageData;
-  const x0 = Math.floor((cellX * width) / cols);
-  const x1 = Math.floor(((cellX + 1) * width) / cols);
-  const y0 = Math.floor((cellY * height) / rows);
-  const y1 = Math.floor(((cellY + 1) * height) / rows);
+  let x0 = Math.floor((cellX * width) / cols);
+  let x1 = Math.floor(((cellX + 1) * width) / cols);
+  let y0 = Math.floor((cellY * height) / rows);
+  let y1 = Math.floor(((cellY + 1) * height) / rows);
+
+  // Ensure every grid cell samples at least one pixel.
+  x0 = Math.max(0, Math.min(width - 1, x0));
+  y0 = Math.max(0, Math.min(height - 1, y0));
+  x1 = Math.max(x0 + 1, Math.min(width, x1));
+  y1 = Math.max(y0 + 1, Math.min(height, y1));
 
   const rs: number[] = [];
   const gs: number[] = [];
@@ -1726,9 +2256,11 @@ function extractCellMedianRgb(imageData: ImageData, cellX: number, cellY: number
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const i = (y * width + x) * 4;
-      rs.push(data[i]);
-      gs.push(data[i + 1]);
-      bs.push(data[i + 2]);
+      const a = data[i + 3] / 255;
+      // Blend transparent pixels over white background to avoid dark fringes after crop.
+      rs.push(Math.round(data[i] * a + 255 * (1 - a)));
+      gs.push(Math.round(data[i + 1] * a + 255 * (1 - a)));
+      bs.push(Math.round(data[i + 2] * a + 255 * (1 - a)));
     }
   }
 
