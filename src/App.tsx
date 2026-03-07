@@ -1,4 +1,8 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PUBLIC_PRICING_PRESET, COMPLEXITY_CAP_TIERS } from './config/pricing';
+import { SHORTCUTS } from './config/shortcuts';
+import { createDraft, deleteDraft, getDraftLimit, getDraftSnapshot, listDrafts, renameDraft, setDraftVersionNote, updateDraft, type DraftSnapshot, type DraftSummary } from './services/draftStore';
+import { loadCustomPaletteGroups, makeCustomPaletteId, saveCustomPaletteGroups, type CustomPaletteColor, type CustomPaletteGroup } from './services/customPaletteStore';
 
 type MatchStrategy = 'lab_nearest' | 'rgb_nearest';
 type LayoutMode = 'fit' | 'lock' | 'pad';
@@ -11,6 +15,8 @@ type PaletteColor = {
 };
 
 type PaletteGroup = {
+  id?: string;
+  isCustom?: boolean;
   name: string;
   colors: PaletteColor[];
 };
@@ -40,6 +46,11 @@ type CellChange = {
   after: Cell;
 };
 
+type ChangeBatch = {
+  label: string;
+  changes: CellChange[];
+};
+
 type PaletteJson = {
   groups?: Array<{
     name: string;
@@ -58,28 +69,81 @@ type CropRect = {
 };
 
 type CropDragMode = 'new' | 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+type PdfTileInfo = {
+  pageNo: number;
+  px: number;
+  py: number;
+  startCol: number;
+  startRow: number;
+  colsPart: number;
+  rowsPart: number;
+};
+type PdfPaginationInfo = {
+  fitsSinglePage: boolean;
+  hasRightSpace: boolean;
+  tileCols: number;
+  tileRows: number;
+  xPages: number;
+  yPages: number;
+  totalTiles: number;
+  tiles: PdfTileInfo[];
+};
+type OversizePlan = {
+  cols: number;
+  rows: number;
+  total: number;
+  suggestCols: number;
+  suggestRows: number;
+  suggestTotal: number;
+};
+type ConstructionTask = {
+  id: string;
+  title: string;
+  subtitle: string;
+  count: number;
+  cellIndices: number[];
+};
+type ConstructionOrderRule = 'count_desc' | 'count_asc' | 'title_asc' | 'title_desc' | 'manual';
+type ConstructionTemplate = {
+  id: string;
+  name: string;
+  strategy: 'block' | 'color';
+  rule: Exclude<ConstructionOrderRule, 'manual'>;
+  colorPriority?: string[];
+  inferredFromManual?: boolean;
+};
 
 const MAX_GRID_SIZE = 10000;
+const GRID_SOFT_LIMIT = 40000;
+const PRE_MERGE_DELTAE_MAX = 30;
 const PIXCHI_META_PREFIX = 'PIXCHI_META_V1:';
 const EMPTY_EDIT_COLOR_NAME = '__EMPTY__';
 const EMPTY_EDIT_COLOR = { name: '無', hex: '#FFFFFF' };
+const AUTO_SAVE_INTERVAL_MS = 3 * 60 * 1000;
+const PDF_BEAD_MM = 2.6;
+const SHORTCUTS_STORAGE_KEY = 'pixchi_shortcuts_v1';
+const CONSTRUCTION_TEMPLATE_STORAGE_KEY = 'pixchi_construction_templates_v1';
+const SHORTCUT_LABELS: Record<keyof typeof SHORTCUTS, string> = {
+  undo: '復原',
+  redo: '重做',
+  toolPan: '手型',
+  toolPaint: '上色',
+  toolErase: '橡皮擦',
+  toolBucket: '油漆桶',
+  toolPicker: '取色',
+  toggleCode: '切換色號文字',
+  brushDown: '筆刷縮小',
+  brushUp: '筆刷放大',
+  zoomIn: '放大',
+  zoomOut: '縮小',
+  zoomReset: '重置視圖',
+  toggleCanvasFullscreen: '畫布全螢幕',
+  tilePrev: '上一分塊',
+  tileNext: '下一分塊'
+};
 const ASSET_BASE_URL = import.meta.env.BASE_URL;
 const PDF_FONT_URL = `${ASSET_BASE_URL}fonts/NotoSansTC-VF.ttf`;
 const PALETTE_JSON_URL = `${ASSET_BASE_URL}color-palette.json`;
-const PUBLIC_PRICING_PRESET = {
-  unitCost: 0.08,
-  lossRate: 5,
-  labor: 80,
-  fixedCost: 20,
-  margin: 20,
-  complexityPerBead: 0.12
-};
-const COMPLEXITY_CAP_TIERS: Array<{ maxBeads: number; cap: number }> = [
-  { maxBeads: 500, cap: 30 },
-  { maxBeads: 1200, cap: 80 },
-  { maxBeads: 2500, cap: 180 },
-  { maxBeads: Number.POSITIVE_INFINITY, cap: 300 }
-];
 let pdfRuntimePromise: Promise<{
   PDFDocument: any;
   StandardFonts: any;
@@ -87,13 +151,107 @@ let pdfRuntimePromise: Promise<{
   fontkit: any;
 }> | null = null;
 
+function isShortcutMatch(ev: KeyboardEvent, shortcut: string) {
+  const parts = shortcut.toLowerCase().split('+');
+  const key = parts[parts.length - 1];
+  const needCtrl = parts.includes('ctrl');
+  const needMeta = parts.includes('meta');
+  const needShift = parts.includes('shift');
+  if (!!ev.ctrlKey !== needCtrl) return false;
+  if (!!ev.metaKey !== needMeta) return false;
+  if (!!ev.shiftKey !== needShift) return false;
+  const actualKey = ev.key === ' ' ? 'space' : ev.key.toLowerCase();
+  return actualKey === key;
+}
+
+function matchesShortcutSet(ev: KeyboardEvent, shortcuts: readonly string[]) {
+  return shortcuts.some((s) => isShortcutMatch(ev, s));
+}
+
+type ShortcutConfig = Record<keyof typeof SHORTCUTS, string[]>;
+
+function buildDefaultShortcutConfig(): ShortcutConfig {
+  const next = {} as ShortcutConfig;
+  for (const key of Object.keys(SHORTCUTS) as Array<keyof typeof SHORTCUTS>) {
+    next[key] = [...SHORTCUTS[key]];
+  }
+  return next;
+}
+
+function loadShortcutConfig(): ShortcutConfig {
+  const fallback = buildDefaultShortcutConfig();
+  try {
+    const raw = localStorage.getItem(SHORTCUTS_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<Record<keyof typeof SHORTCUTS, string[]>>;
+    for (const key of Object.keys(fallback) as Array<keyof typeof SHORTCUTS>) {
+      const next = parsed[key];
+      if (Array.isArray(next) && next.length) fallback[key] = next.map((x) => String(x).trim()).filter(Boolean);
+    }
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadConstructionTemplates(): ConstructionTemplate[] {
+  try {
+    const raw = localStorage.getItem(CONSTRUCTION_TEMPLATE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Array<Partial<ConstructionTemplate>>;
+    const out: ConstructionTemplate[] = [];
+    for (const item of parsed ?? []) {
+      const id = String(item.id ?? '').trim();
+      const name = String(item.name ?? '').trim();
+      const strategy = item.strategy === 'color' ? 'color' : 'block';
+      const ruleRaw = String((item as any).rule ?? '').trim();
+      const rule: Exclude<ConstructionOrderRule, 'manual'> =
+        ruleRaw === 'count_asc' || ruleRaw === 'title_asc' || ruleRaw === 'title_desc'
+          ? (ruleRaw as Exclude<ConstructionOrderRule, 'manual'>)
+          : 'count_desc';
+      const colorPriority = Array.isArray((item as any).colorPriority)
+        ? (item as any).colorPriority.map((x: unknown) => String(x).trim()).filter(Boolean)
+        : undefined;
+      const inferredFromManual = !!(item as any).inferredFromManual;
+      if (!id || !name) continue;
+      out.push({ id, name, strategy, rule, colorPriority, inferredFromManual });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function toPaletteColor(input: { name: string; hex: string }): PaletteColor {
+  const hex = input.hex.toUpperCase();
+  const rgb = hexToRgb(hex);
+  return { name: input.name, hex, rgb, lab: rgbToLab(...rgb) };
+}
+
+function toCustomPaletteViewGroup(group: CustomPaletteGroup): PaletteGroup {
+  return {
+    id: group.id,
+    isCustom: true,
+    name: group.name,
+    colors: group.colors.map((c) => toPaletteColor(c))
+  };
+}
+
+function getPageFromHash(): 'main' | 'palette' {
+  const hash = (typeof window !== 'undefined' ? window.location.hash : '').toLowerCase();
+  if (hash.includes('palette')) return 'palette';
+  return 'main';
+}
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const canvasWrapRef = useRef<HTMLDivElement | null>(null);
   const colorMenuRef = useRef<HTMLDivElement | null>(null);
   const focusColorMenuRef = useRef<HTMLDivElement | null>(null);
+  const constructionListRef = useRef<HTMLDivElement | null>(null);
+  const constructionItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const pdfImportRef = useRef<HTMLInputElement | null>(null);
-  const renderMetaRef = useRef({ ox: 0, oy: 0, cell: 1 });
+  const renderMetaRef = useRef({ ox: 0, oy: 0, cell: 1, viewStartCol: 0, viewStartRow: 0, viewCols: 1, viewRows: 1 });
   const imagePreviewMetaRef = useRef({ ox: 0, oy: 0, scale: 1, drawW: 0, drawH: 0 });
   const isPointerDownRef = useRef(false);
   const lastDragCellIdxRef = useRef<number | null>(null);
@@ -102,25 +260,46 @@ export default function App() {
   const cropDragModeRef = useRef<CropDragMode | null>(null);
   const cropStartRectRef = useRef<CropRect | null>(null);
   const isCropDraggingRef = useRef(false);
+  const isApplyingDraftRef = useRef(false);
+  const latestSnapshotRef = useRef<DraftSnapshot | null>(null);
+  const isDraftBusyRef = useRef(false);
+  const activeDraftIdRef = useRef('');
+  const lastManualSaveAtRef = useRef(0);
+  const lastSavedFingerprintRef = useRef('');
 
   const [projectName, setProjectName] = useState('未命名專案');
-  const [groups, setGroups] = useState<PaletteGroup[]>([]);
+  const [builtinGroups, setBuiltinGroups] = useState<PaletteGroup[]>([]);
+  const [customPaletteGroups, setCustomPaletteGroups] = useState<CustomPaletteGroup[]>([]);
   const [activeGroupName, setActiveGroupName] = useState('');
+  const [page, setPage] = useState<'main' | 'palette'>(() => getPageFromHash());
+  const [paletteTab, setPaletteTab] = useState<'builtin' | 'custom'>('builtin');
+  const [builtinPreviewGroupName, setBuiltinPreviewGroupName] = useState('');
+  const [paletteNewGroupName, setPaletteNewGroupName] = useState('');
+  const [paletteEditGroupId, setPaletteEditGroupId] = useState('');
+  const [paletteNewColorName, setPaletteNewColorName] = useState('');
+  const [paletteNewColorHex, setPaletteNewColorHex] = useState('#ffffff');
+  const [customEditColorIndex, setCustomEditColorIndex] = useState<number | null>(null);
+  const [customEditColorHex, setCustomEditColorHex] = useState('#ffffff');
   const [imageBitmap, setImageBitmap] = useState<ImageBitmap | null>(null);
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageMeta, setImageMeta] = useState('-');
   const [cropRect, setCropRect] = useState<CropRect | null>(null);
 
   const [cols, setCols] = useState(32);
   const [rows, setRows] = useState(32);
   const [mode, setMode] = useState<LayoutMode>('fit');
-  const [strategy, setStrategy] = useState<MatchStrategy>('lab_nearest');
+  const strategy: MatchStrategy = 'lab_nearest';
+  const [preMergeDeltaE, setPreMergeDeltaE] = useState(0);
   const [showCode, setShowCode] = useState(true);
   const [exportScale, setExportScale] = useState<1 | 2 | 3>(2);
   const [cropToolEnabled, setCropToolEnabled] = useState(true);
   const [cropHoverMode, setCropHoverMode] = useState<CropDragMode | null>(null);
-  const [editTool, setEditTool] = useState<'pan' | 'paint' | 'erase'>('pan');
+  const [editTool, setEditTool] = useState<'pan' | 'paint' | 'erase' | 'bucket' | 'picker'>('pan');
+  const [brushSize, setBrushSize] = useState(1);
+  const [bucketMode, setBucketMode] = useState<'global' | 'region'>('global');
   const [zoom, setZoom] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const [isCanvasFullscreen, setIsCanvasFullscreen] = useState(false);
   const [proMode] = useState(() => {
     if (typeof window === 'undefined') return false;
     const query = new URLSearchParams(window.location.search).get('pro');
@@ -136,6 +315,8 @@ export default function App() {
   const [focusColorName, setFocusColorName] = useState('');
   const [focusColorSearch, setFocusColorSearch] = useState('');
   const [focusColorMenuOpen, setFocusColorMenuOpen] = useState(false);
+  const [focusNeighborEnabled, setFocusNeighborEnabled] = useState(false);
+  const [focusNeighborDeltaE, setFocusNeighborDeltaE] = useState(10);
   const [statsSearch, setStatsSearch] = useState('');
   const [proUnitCost, setProUnitCost] = useState(PUBLIC_PRICING_PRESET.unitCost);
   const [proLossRate, setProLossRate] = useState(PUBLIC_PRICING_PRESET.lossRate);
@@ -148,19 +329,142 @@ export default function App() {
   const [gridMeta, setGridMeta] = useState('-');
   const [statusText, setStatusText] = useState('尚未載入圖片。');
   const [isPdfBusy, setIsPdfBusy] = useState(false);
-  const [undoStack, setUndoStack] = useState<CellChange[][]>([]);
-  const [redoStack, setRedoStack] = useState<CellChange[][]>([]);
+  const [undoStack, setUndoStack] = useState<ChangeBatch[]>([]);
+  const [redoStack, setRedoStack] = useState<ChangeBatch[]>([]);
   const [lastPickedOldColor, setLastPickedOldColor] = useState<string | null>(null);
-
-  const activeGroup = useMemo(
-    () => groups.find((x) => x.name === activeGroupName) ?? null,
-    [groups, activeGroupName]
+  const [historyItems, setHistoryItems] = useState<string[]>([]);
+  const [drafts, setDrafts] = useState<DraftSummary[]>([]);
+  const [activeDraftId, setActiveDraftId] = useState('');
+  const [activeDraftVersionId, setActiveDraftVersionId] = useState('');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [isDraftBusy, setIsDraftBusy] = useState(false);
+  const [draftRenameInput, setDraftRenameInput] = useState('');
+  const [draftVersionNoteInput, setDraftVersionNoteInput] = useState('');
+  const [compareVersionA, setCompareVersionA] = useState('');
+  const [compareVersionB, setCompareVersionB] = useState('');
+  const [compareSummary, setCompareSummary] = useState('');
+  const [shortcutConfig, setShortcutConfig] = useState<ShortcutConfig>(() => loadShortcutConfig());
+  const [preflightCsv, setPreflightCsv] = useState<Array<{ ok: boolean; label: string; detail: string }>>([]);
+  const [preflightPdf, setPreflightPdf] = useState<Array<{ ok: boolean; label: string; detail: string }>>([]);
+  const [storageEstimateText, setStorageEstimateText] = useState('-');
+  const [convertProgress, setConvertProgress] = useState<{ running: boolean; phase: string; percent: number }>({
+    running: false,
+    phase: '',
+    percent: 0
+  });
+  const [pdfPageFrom, setPdfPageFrom] = useState(1);
+  const [pdfPageTo, setPdfPageTo] = useState(1);
+  const [pdfJumpPage, setPdfJumpPage] = useState(1);
+  const [oversizePlan, setOversizePlan] = useState<OversizePlan | null>(null);
+  const [largeGridMode, setLargeGridMode] = useState(false);
+  const [largeViewTilePage, setLargeViewTilePage] = useState(0);
+  const [largeOperationScope, setLargeOperationScope] = useState<'tile' | 'all'>('tile');
+  const [constructionMode, setConstructionMode] = useState(false);
+  const [constructionStrategy, setConstructionStrategy] = useState<'block' | 'color'>('block');
+  const [constructionShowDoneOverlay, setConstructionShowDoneOverlay] = useState(true);
+  const [constructionDoneMap, setConstructionDoneMap] = useState<Record<string, boolean>>({});
+  const [constructionCurrentTaskId, setConstructionCurrentTaskId] = useState('');
+  const [constructionOrderRule, setConstructionOrderRule] = useState<ConstructionOrderRule>('count_desc');
+  const [constructionCustomOrder, setConstructionCustomOrder] = useState<string[]>([]);
+  const [constructionDragTaskId, setConstructionDragTaskId] = useState('');
+  const [constructionTemplates, setConstructionTemplates] = useState<ConstructionTemplate[]>(() => loadConstructionTemplates());
+  const [constructionTemplateName, setConstructionTemplateName] = useState('我的模板');
+  const [constructionTemplateId, setConstructionTemplateId] = useState('');
+  const defaultShortcutConfig = useMemo(() => buildDefaultShortcutConfig(), []);
+  const effectiveShortcutConfig = useMemo(
+    () => (proMode ? shortcutConfig : defaultShortcutConfig),
+    [proMode, shortcutConfig, defaultShortcutConfig]
   );
+
+  const groups = useMemo(
+    () => [...builtinGroups, ...customPaletteGroups.map((g) => toCustomPaletteViewGroup(g))],
+    [builtinGroups, customPaletteGroups]
+  );
+  const activeGroup = useMemo(() => groups.find((x) => x.name === activeGroupName) ?? null, [groups, activeGroupName]);
+  const editablePaletteGroup = useMemo(
+    () => customPaletteGroups.find((g) => g.id === paletteEditGroupId) ?? null,
+    [customPaletteGroups, paletteEditGroupId]
+  );
+  const builtinPreviewGroup = useMemo(
+    () => builtinGroups.find((g) => g.name === builtinPreviewGroupName) ?? null,
+    [builtinGroups, builtinPreviewGroupName]
+  );
+  const activeDraft = useMemo(() => drafts.find((d) => d.id === activeDraftId) ?? null, [drafts, activeDraftId]);
+  const activeVersionMeta = useMemo(
+    () => (activeDraft?.versions ?? []).find((v) => v.id === activeDraftVersionId) ?? null,
+    [activeDraft, activeDraftVersionId]
+  );
+
+  useEffect(() => {
+    isDraftBusyRef.current = isDraftBusy;
+  }, [isDraftBusy]);
+
+  useEffect(() => {
+    activeDraftIdRef.current = activeDraftId;
+  }, [activeDraftId]);
+
+  useEffect(() => {
+    setDraftRenameInput(activeDraft?.name ?? '');
+    setDraftVersionNoteInput(activeVersionMeta?.note ?? '');
+  }, [activeDraft?.name, activeVersionMeta?.note]);
+
+  useEffect(() => {
+    const versions = activeDraft?.versions ?? [];
+    if (!versions.length) {
+      setCompareVersionA('');
+      setCompareVersionB('');
+      setCompareSummary('');
+      return;
+    }
+    const latest = versions[versions.length - 1]?.id ?? '';
+    const prev = versions[versions.length - 2]?.id ?? latest;
+    setCompareVersionA(prev);
+    setCompareVersionB(latest);
+  }, [activeDraftId, activeDraft?.versionCount]);
+
+  useEffect(() => {
+    if (!paletteEditGroupId) {
+      setPaletteNewGroupName('');
+      return;
+    }
+    const found = customPaletteGroups.find((g) => g.id === paletteEditGroupId);
+    if (found) setPaletteNewGroupName(found.name);
+  }, [paletteEditGroupId, customPaletteGroups]);
+
+  useEffect(() => {
+    if (!proMode) return;
+    localStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(shortcutConfig));
+  }, [proMode, shortcutConfig]);
+
+  useEffect(() => {
+    const loaded = loadCustomPaletteGroups();
+    setCustomPaletteGroups(loaded);
+  }, []);
+
+  useEffect(() => {
+    saveCustomPaletteGroups(customPaletteGroups);
+  }, [customPaletteGroups]);
+
+  useEffect(() => {
+    const onHash = () => setPage(getPageFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  useEffect(() => {
+    if (!proMode) return;
+    localStorage.setItem(CONSTRUCTION_TEMPLATE_STORAGE_KEY, JSON.stringify(constructionTemplates));
+  }, [constructionTemplates, proMode]);
+
+  useEffect(() => {
+    if (proMode) return;
+    if (constructionOrderRule === 'manual') setConstructionOrderRule('count_desc');
+  }, [proMode, constructionOrderRule]);
 
   const filteredEditColors = useMemo(() => {
     const q = paletteSearch.trim().toLowerCase();
     const colors = activeGroup?.colors ?? [];
-    return colors.filter((c) => !q || c.name.toLowerCase().includes(q) || c.hex.toLowerCase().includes(q));
+    return colors.filter((c) => !q || c.name.toLowerCase().includes(q));
   }, [activeGroup, paletteSearch]);
 
   const selectedEditColor = useMemo(() => {
@@ -195,18 +499,30 @@ export default function App() {
 
   const filteredStatsRows = useMemo(() => {
     const q = statsSearch.trim().toLowerCase();
-    return statsRows.filter((r) => !q || r.name.toLowerCase().includes(q) || r.hex.toLowerCase().includes(q));
+    return statsRows.filter((r) => !q || r.name.toLowerCase().includes(q));
   }, [statsRows, statsSearch]);
 
   const filteredFocusColors = useMemo(() => {
     const q = focusColorSearch.trim().toLowerCase();
-    return statsRows.filter((r) => !q || r.name.toLowerCase().includes(q) || r.hex.toLowerCase().includes(q));
+    return statsRows.filter((r) => !q || r.name.toLowerCase().includes(q));
   }, [statsRows, focusColorSearch]);
 
   const selectedFocusColor = useMemo(
     () => statsRows.find((r) => r.name === focusColorName) ?? null,
     [statsRows, focusColorName]
   );
+
+  const focusVisibleNameSet = useMemo(() => {
+    if (!focusColorName || !focusNeighborEnabled || !selectedFocusColor) return null;
+    const focusLab = rgbToLab(...hexToRgb(selectedFocusColor.hex));
+    const names = new Set<string>();
+    for (const row of statsRows) {
+      const lab = rgbToLab(...hexToRgb(row.hex));
+      if (deltaE2000(focusLab, lab) <= focusNeighborDeltaE) names.add(row.name);
+    }
+    names.add(focusColorName);
+    return names;
+  }, [focusColorName, focusNeighborEnabled, focusNeighborDeltaE, selectedFocusColor, statsRows]);
 
   const totalBeads = converted?.cells.filter((c) => !c.isEmpty).length ?? 0;
   const complexityScore = useMemo(() => {
@@ -262,7 +578,171 @@ export default function App() {
   const fixedCost = proMode ? proFixedCost : PUBLIC_PRICING_PRESET.fixedCost;
   const marginRate = proMode ? proMargin : PUBLIC_PRICING_PRESET.margin;
   const subtotal = materialCost + laborCost + fixedCost + complexityFee;
-  const quotePrice = subtotal * (1 + marginRate / 100);
+  const quotePrice = Math.ceil(subtotal * (1 + marginRate / 100));
+  const pdfPagination = useMemo(() => {
+    if (!converted) return null;
+    return buildPdfPagination(converted, PDF_BEAD_MM);
+  }, [converted]);
+  const pdfTileThumbMap = useMemo(() => {
+    const map = new Map<number, string>();
+    if (!converted || !pdfPagination || pdfPagination.totalTiles <= 1) return map;
+    const maxThumbs = 80;
+    for (const tile of pdfPagination.tiles.slice(0, maxThumbs)) {
+      const c = document.createElement('canvas');
+      const w = Math.max(24, tile.colsPart);
+      const h = Math.max(24, tile.rowsPart);
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext('2d');
+      if (!ctx) continue;
+      const sx = w / tile.colsPart;
+      const sy = h / tile.rowsPart;
+      for (let y = 0; y < tile.rowsPart; y++) {
+        for (let x = 0; x < tile.colsPart; x++) {
+          const srcX = tile.startCol + x;
+          const srcY = tile.startRow + y;
+          const idx = srcY * converted.cols + srcX;
+          const cell = converted.cells[idx];
+          ctx.fillStyle = cell?.hex ?? '#ffffff';
+          ctx.fillRect(Math.floor(x * sx), Math.floor(y * sy), Math.ceil(sx), Math.ceil(sy));
+        }
+      }
+      map.set(tile.pageNo, c.toDataURL('image/png'));
+    }
+    return map;
+  }, [converted, pdfPagination]);
+  const selectedLargeTile = useMemo(() => {
+    if (!pdfPagination || !largeGridMode || largeViewTilePage <= 0) return null;
+    return pdfPagination.tiles.find((t) => t.pageNo === largeViewTilePage) ?? null;
+  }, [pdfPagination, largeGridMode, largeViewTilePage]);
+  const constructionBaseTasks = useMemo(() => {
+    if (!converted) return [];
+    return buildConstructionTasks(converted, constructionStrategy);
+  }, [converted, constructionStrategy]);
+  const constructionTasks = useMemo(() => {
+    if (!constructionBaseTasks.length) return [];
+    if (constructionOrderRule !== 'manual') {
+      return sortConstructionTasksByRule(constructionBaseTasks, constructionOrderRule);
+    }
+    if (!proMode || !constructionCustomOrder.length) return constructionBaseTasks;
+    const map = new Map(constructionBaseTasks.map((t) => [t.id, t]));
+    const ordered: ConstructionTask[] = [];
+    for (const id of constructionCustomOrder) {
+      const t = map.get(id);
+      if (!t) continue;
+      ordered.push(t);
+      map.delete(id);
+    }
+    for (const t of constructionBaseTasks) {
+      if (map.has(t.id)) ordered.push(t);
+    }
+    return ordered;
+  }, [constructionBaseTasks, proMode, constructionCustomOrder, constructionOrderRule]);
+  const constructionCurrentTask = useMemo(() => {
+    if (!constructionTasks.length) return null;
+    if (!constructionCurrentTaskId) return null;
+    const byId = constructionTasks.find((t) => t.id === constructionCurrentTaskId);
+    if (byId) return byId;
+    return null;
+  }, [constructionTasks, constructionCurrentTaskId, constructionDoneMap]);
+  const constructionCellTaskMap = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const task of constructionTasks) {
+      for (const idx of task.cellIndices) {
+        if (!map.has(idx)) map.set(idx, task.id);
+      }
+    }
+    return map;
+  }, [constructionTasks]);
+  const constructionDoneCellSet = useMemo(() => {
+    const set = new Set<number>();
+    if (!constructionTasks.length) return set;
+    for (const t of constructionTasks) {
+      if (!constructionDoneMap[t.id]) continue;
+      for (const idx of t.cellIndices) set.add(idx);
+    }
+    return set;
+  }, [constructionTasks, constructionDoneMap]);
+  const constructionCurrentCellSet = useMemo(() => {
+    const set = new Set<number>();
+    if (!constructionCurrentTask) return set;
+    for (const idx of constructionCurrentTask.cellIndices) set.add(idx);
+    return set;
+  }, [constructionCurrentTask]);
+  const shortcutConflicts = useMemo(() => {
+    if (!proMode) return [];
+    const rev = new Map<string, Array<keyof typeof SHORTCUTS>>();
+    for (const key of Object.keys(shortcutConfig) as Array<keyof typeof SHORTCUTS>) {
+      for (const raw of shortcutConfig[key]) {
+        const normalized = String(raw).trim().toLowerCase();
+        if (!normalized) continue;
+        const arr = rev.get(normalized) ?? [];
+        arr.push(key);
+        rev.set(normalized, arr);
+      }
+    }
+    return Array.from(rev.entries())
+      .filter(([, actions]) => actions.length > 1)
+      .map(([hotkey, actions]) => ({ hotkey, actions }));
+  }, [proMode, shortcutConfig]);
+  const constructionCompletionText = useMemo(() => {
+    if (!constructionTasks.length) return '0 / 0';
+    let done = 0;
+    for (const t of constructionTasks) {
+      if (constructionDoneMap[t.id]) done += 1;
+    }
+    return `${done} / ${constructionTasks.length}`;
+  }, [constructionTasks, constructionDoneMap]);
+  const constructionRuleInference = useMemo(() => {
+    if (!proMode || constructionOrderRule !== 'manual' || !constructionTasks.length) return null;
+    const currentIds = constructionTasks.map((t) => t.id);
+    const rules: Exclude<ConstructionOrderRule, 'manual'>[] = ['count_desc', 'count_asc', 'title_asc', 'title_desc'];
+    const scores = rules.map((rule) => {
+      const ids = sortConstructionTasksByRule(constructionBaseTasks, rule).map((t) => t.id);
+      return { rule, score: calcOrderSimilarity(currentIds, ids) };
+    });
+    scores.sort((a, b) => b.score - a.score);
+    return { bestRule: scores[0].rule, bestScore: scores[0].score, scores };
+  }, [proMode, constructionOrderRule, constructionTasks, constructionBaseTasks]);
+
+  useEffect(() => {
+    if (!constructionMode) return;
+    const id = constructionCurrentTask?.id;
+    if (!id) return;
+    const node = constructionItemRefs.current[id];
+    if (!node) return;
+    node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [constructionMode, constructionCurrentTask?.id]);
+
+  useEffect(() => {
+    const ids = new Set(constructionTasks.map((t) => t.id));
+    setConstructionDoneMap((prev) => {
+      let changed = false;
+      const next: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        if (!ids.has(k)) {
+          changed = true;
+          continue;
+        }
+        next[k] = v;
+      }
+      if (!changed && Object.keys(next).length === Object.keys(prev).length) return prev;
+      return next;
+    });
+    setConstructionCurrentTaskId((prev) => {
+      if (prev === '') return '';
+      if (prev && ids.has(prev)) return prev;
+      return constructionTasks.find((t) => !constructionDoneMap[t.id])?.id ?? constructionTasks[0]?.id ?? '';
+    });
+    if (proMode) {
+      setConstructionCustomOrder((prev) => {
+        const next = prev.filter((id) => ids.has(id));
+        return next.length === prev.length ? prev : next;
+      });
+    } else {
+      setConstructionCustomOrder((prev) => (prev.length ? [] : prev));
+    }
+  }, [constructionTasks, constructionDoneMap, proMode]);
 
   const loadPalette = useCallback(async () => {
     try {
@@ -270,6 +750,7 @@ export default function App() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as PaletteJson;
       const parsed = (data.groups ?? []).map((g) => ({
+        isCustom: false,
         name: g.name,
         colors: (g.colors ?? [])
           .filter((c) => /^#[0-9a-fA-F]{6}$/.test(c.hex ?? ''))
@@ -285,14 +766,8 @@ export default function App() {
       }));
 
       if (!parsed.length) throw new Error('找不到可用色庫群組');
-      setGroups(parsed);
-      setActiveGroupName((prev) => {
-        if (prev && parsed.some((g) => g.name === prev)) return prev;
-        const defaultGroup = parsed.find((g) => g.name.includes('小舞'));
-        if (defaultGroup) return defaultGroup.name;
-        return parsed[0].name;
-      });
-      setStatusText(`色庫載入完成，群組數：${parsed.length}`);
+      setBuiltinGroups(parsed);
+      setStatusText(`色庫載入完成，內建群組數：${parsed.length}`);
     } catch (err) {
       setStatusText(`無法載入 color-palette.json：${(err as Error).message}`);
     }
@@ -301,6 +776,338 @@ export default function App() {
   useEffect(() => {
     void loadPalette();
   }, [loadPalette]);
+
+  useEffect(() => {
+    if (!groups.length) return;
+    setActiveGroupName((prev) => {
+      if (prev && groups.some((g) => g.name === prev)) return prev;
+      const defaultGroup = groups.find((g) => g.name.includes('小舞'));
+      return defaultGroup?.name ?? groups[0].name;
+    });
+  }, [groups]);
+
+  useEffect(() => {
+    if (!builtinGroups.length) {
+      setBuiltinPreviewGroupName('');
+      return;
+    }
+    setBuiltinPreviewGroupName((prev) => {
+      if (prev && builtinGroups.some((g) => g.name === prev)) return prev;
+      return builtinGroups[0].name;
+    });
+  }, [builtinGroups]);
+
+  useEffect(() => {
+    if (paletteEditGroupId && customPaletteGroups.some((g) => g.id === paletteEditGroupId)) return;
+    setPaletteEditGroupId(customPaletteGroups[0]?.id ?? '');
+  }, [customPaletteGroups, paletteEditGroupId]);
+
+  useEffect(() => {
+    if (!editablePaletteGroup || customEditColorIndex == null) {
+      setCustomEditColorIndex(null);
+      return;
+    }
+    const c = editablePaletteGroup.colors[customEditColorIndex];
+    if (!c) {
+      setCustomEditColorIndex(null);
+      return;
+    }
+    setCustomEditColorHex(normalizeColorHex(c.hex).toLowerCase());
+  }, [editablePaletteGroup, customEditColorIndex]);
+
+  const customEditRgb = useMemo(() => {
+    return hexToRgb(normalizeColorHex(customEditColorHex));
+  }, [customEditColorHex]);
+
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const est = await navigator.storage?.estimate?.();
+        if (!est) return;
+        const used = est.usage ?? 0;
+        const quota = est.quota ?? 0;
+        if (!quota) {
+          setStorageEstimateText(`${(used / 1024 / 1024).toFixed(2)} MB`);
+          return;
+        }
+        setStorageEstimateText(`${(used / 1024 / 1024).toFixed(2)} / ${(quota / 1024 / 1024).toFixed(0)} MB`);
+      } catch {
+        setStorageEstimateText('-');
+      }
+    };
+    void run();
+  }, [drafts.length, customPaletteGroups.length]);
+
+  useEffect(() => {
+    const total = pdfPagination?.totalTiles ?? 1;
+    setPdfPageFrom((prev) => clampInt(prev, 1, total));
+    setPdfPageTo((prev) => clampInt(prev, 1, total));
+    setPdfJumpPage((prev) => clampInt(prev, 1, total));
+  }, [pdfPagination?.totalTiles]);
+
+  const refreshDrafts = useCallback(async () => {
+    const rows = await listDrafts();
+    setDrafts(rows);
+    if (activeDraftId && !rows.some((d) => d.id === activeDraftId)) {
+      setActiveDraftId('');
+      setActiveDraftVersionId('');
+      setLastSavedAt(null);
+      lastSavedFingerprintRef.current = '';
+      lastManualSaveAtRef.current = 0;
+    }
+  }, [activeDraftId]);
+
+  useEffect(() => {
+    void refreshDrafts();
+  }, [refreshDrafts]);
+
+  const buildDraftSnapshot = useCallback((): DraftSnapshot => {
+    return {
+      projectName,
+      activeGroupName,
+      cols,
+      rows,
+      mode,
+      strategy,
+      preMergeDeltaE,
+      showCode,
+      exportScale,
+      cropToolEnabled,
+      cropRect,
+      imageDataUrl,
+      imageMeta,
+      gridMeta,
+      converted
+    };
+  }, [projectName, activeGroupName, cols, rows, mode, strategy, preMergeDeltaE, showCode, exportScale, cropToolEnabled, cropRect, imageDataUrl, imageMeta, gridMeta, converted]);
+
+  useEffect(() => {
+    latestSnapshotRef.current = buildDraftSnapshot();
+  }, [buildDraftSnapshot]);
+
+  const saveDraft = useCallback(
+    async (options?: { asNew?: boolean; reason?: 'manual' | 'autosave'; silent?: boolean }) => {
+      const asNew = !!options?.asNew;
+      const reason = options?.reason ?? 'manual';
+      const silent = !!options?.silent;
+      if (!imageDataUrl && !converted) {
+        if (!silent) setStatusText('目前沒有可儲存的圖片或轉換結果。');
+        return;
+      }
+      const snapshot = buildDraftSnapshot();
+      const snapshotFingerprint = buildDraftFingerprint(snapshot);
+      setIsDraftBusy(true);
+      try {
+        if (asNew || !activeDraftId) {
+          if (drafts.length >= getDraftLimit()) {
+            setStatusText(`未登入模式最多 ${getDraftLimit()} 份草稿，請先刪除一份再新增。`);
+            return;
+          }
+          const draftName = (projectName || '').trim() || `草稿 ${drafts.length + 1}`;
+          const newId = await createDraft(draftName, snapshot);
+          setActiveDraftId(newId);
+          setActiveDraftVersionId('');
+          const now = Date.now();
+          setLastSavedAt(now);
+          if (reason === 'manual' || asNew) lastManualSaveAtRef.current = now;
+          lastSavedFingerprintRef.current = snapshotFingerprint;
+          if (!silent) setStatusText(`已新增草稿：${draftName}`);
+        } else {
+          await updateDraft(
+            activeDraftId,
+            snapshot,
+            reason,
+            (projectName || '').trim() || undefined,
+            reason === 'manual' ? '手動存檔' : '自動存檔'
+          );
+          setActiveDraftVersionId('');
+          const now = Date.now();
+          setLastSavedAt(now);
+          if (reason === 'manual') lastManualSaveAtRef.current = now;
+          lastSavedFingerprintRef.current = snapshotFingerprint;
+          if (!silent && reason === 'manual') setStatusText('草稿已更新。');
+        }
+        await refreshDrafts();
+      } catch (err) {
+        const message = (err as Error).message;
+        if (message === 'MAX_DRAFTS_REACHED') {
+          setStatusText(`未登入模式最多 ${getDraftLimit()} 份草稿，請先刪除一份再新增。`);
+        } else {
+          setStatusText(`草稿儲存失敗：${message}`);
+        }
+      } finally {
+        setIsDraftBusy(false);
+      }
+    },
+    [imageDataUrl, converted, buildDraftSnapshot, activeDraftId, drafts.length, projectName, refreshDrafts]
+  );
+
+  const loadDraftById = useCallback(
+    async (draftId: string, versionId?: string) => {
+      if (!draftId) return;
+      setIsDraftBusy(true);
+      try {
+        const snapshot = await getDraftSnapshot(draftId, versionId);
+        if (!snapshot) {
+          setStatusText('找不到草稿內容。');
+          return;
+        }
+        isApplyingDraftRef.current = true;
+        const bitmap = snapshot.imageDataUrl ? await dataUrlToBitmap(snapshot.imageDataUrl) : null;
+        setProjectName(snapshot.projectName || '未命名專案');
+        setActiveGroupName(snapshot.activeGroupName || activeGroupName);
+        setCols(Math.max(1, Math.floor(Number(snapshot.cols) || 1)));
+        setRows(Math.max(1, Math.floor(Number(snapshot.rows) || 1)));
+        setMode(snapshot.mode);
+        setPreMergeDeltaE(Math.max(0, Math.min(PRE_MERGE_DELTAE_MAX, Number(snapshot.preMergeDeltaE) || 0)));
+        setShowCode(!!snapshot.showCode);
+        setExportScale(snapshot.exportScale);
+        setCropToolEnabled(!!snapshot.cropToolEnabled);
+        setCropRect(snapshot.cropRect);
+        setImageDataUrl(snapshot.imageDataUrl ?? null);
+        setImageBitmap(bitmap);
+        setImageMeta(snapshot.imageMeta || '-');
+        setGridMeta(snapshot.gridMeta || '-');
+        setConverted(snapshot.converted ?? null);
+        setUndoStack([]);
+        setRedoStack([]);
+        setHistoryItems([]);
+        setFocusColorName('');
+        setFocusColorSearch('');
+        setEditColorMenuOpen(false);
+        setFocusColorMenuOpen(false);
+        setZoom(1);
+        setPanOffset({ x: 0, y: 0 });
+        setActiveDraftId(draftId);
+        setActiveDraftVersionId(versionId ?? '');
+        setLastSavedAt(Date.now());
+        lastSavedFingerprintRef.current = buildDraftFingerprint(snapshot);
+        setStatusText(versionId ? '已還原到指定版本。' : '草稿載入完成。');
+      } catch (err) {
+        setStatusText(`草稿載入失敗：${(err as Error).message}`);
+      } finally {
+        isApplyingDraftRef.current = false;
+        setIsDraftBusy(false);
+      }
+    },
+    [activeGroupName]
+  );
+
+  const removeDraftById = useCallback(
+    async (draftId: string) => {
+      if (!draftId) return;
+      setIsDraftBusy(true);
+      try {
+        await deleteDraft(draftId);
+        if (activeDraftId === draftId) {
+          setActiveDraftId('');
+          setActiveDraftVersionId('');
+          setLastSavedAt(null);
+          lastSavedFingerprintRef.current = '';
+          lastManualSaveAtRef.current = 0;
+        }
+        await refreshDrafts();
+        setStatusText('草稿已刪除。');
+      } catch (err) {
+        setStatusText(`刪除草稿失敗：${(err as Error).message}`);
+      } finally {
+        setIsDraftBusy(false);
+      }
+    },
+    [activeDraftId, refreshDrafts]
+  );
+
+  const saveDraftRename = useCallback(async () => {
+    if (!activeDraftId) return;
+    const name = draftRenameInput.trim();
+    if (!name) {
+      setStatusText('草稿名稱不可為空。');
+      return;
+    }
+    setIsDraftBusy(true);
+    try {
+      await renameDraft(activeDraftId, name);
+      await refreshDrafts();
+      setStatusText('草稿名稱已更新。');
+    } catch (err) {
+      setStatusText(`草稿改名失敗：${(err as Error).message}`);
+    } finally {
+      setIsDraftBusy(false);
+    }
+  }, [activeDraftId, draftRenameInput, refreshDrafts]);
+
+  const saveVersionNote = useCallback(async () => {
+    if (!activeDraftId || !activeDraftVersionId) return;
+    setIsDraftBusy(true);
+    try {
+      await setDraftVersionNote(activeDraftId, activeDraftVersionId, draftVersionNoteInput.trim());
+      await refreshDrafts();
+      setStatusText('版本備註已更新。');
+    } catch (err) {
+      setStatusText(`版本備註更新失敗：${(err as Error).message}`);
+    } finally {
+      setIsDraftBusy(false);
+    }
+  }, [activeDraftId, activeDraftVersionId, draftVersionNoteInput, refreshDrafts]);
+
+  const compareDraftVersions = useCallback(async () => {
+    if (!activeDraftId || !compareVersionA || !compareVersionB) {
+      setCompareSummary('請先選擇兩個版本。');
+      return;
+    }
+    try {
+      const a = await getDraftSnapshot(activeDraftId, compareVersionA);
+      const b = await getDraftSnapshot(activeDraftId, compareVersionB);
+      if (!a || !b) {
+        setCompareSummary('版本資料不存在。');
+        return;
+      }
+      const changedSettings: string[] = [];
+      if (a.projectName !== b.projectName) changedSettings.push('專案名稱');
+      if (a.activeGroupName !== b.activeGroupName) changedSettings.push('作用群組');
+      if (a.cols !== b.cols || a.rows !== b.rows) changedSettings.push('格線尺寸');
+      if (a.mode !== b.mode) changedSettings.push('版面模式');
+      if (a.strategy !== b.strategy) changedSettings.push('比對策略');
+      if ((a.preMergeDeltaE ?? 0) !== (b.preMergeDeltaE ?? 0)) changedSettings.push('轉換前併色門檻');
+      if (a.showCode !== b.showCode) changedSettings.push('色號顯示');
+      const cellsA = a.converted?.cells ?? [];
+      const cellsB = b.converted?.cells ?? [];
+      const len = Math.min(cellsA.length, cellsB.length);
+      let changedCells = 0;
+      for (let i = 0; i < len; i++) {
+        const ca = cellsA[i];
+        const cb = cellsB[i];
+        if (!ca || !cb) continue;
+        if (ca.colorName !== cb.colorName || !!ca.isEmpty !== !!cb.isEmpty) changedCells += 1;
+      }
+      const sizeDiff = cellsA.length !== cellsB.length ? `；格子總數不同 ${cellsA.length}/${cellsB.length}` : '';
+      const settingsText = changedSettings.length ? changedSettings.join('、') : '無';
+      setCompareSummary(`差異格數 ${changedCells}${sizeDiff}；設定差異：${settingsText}`);
+    } catch (err) {
+      setCompareSummary(`比較失敗：${(err as Error).message}`);
+    }
+  }, [activeDraftId, compareVersionA, compareVersionB]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (isApplyingDraftRef.current) return;
+      if (!activeDraftIdRef.current) return;
+      if (isDraftBusyRef.current) return;
+
+      const snapshot = latestSnapshotRef.current;
+      if (!snapshot) return;
+      if (!snapshot.imageDataUrl && !snapshot.converted) return;
+
+      const now = Date.now();
+      if (now - lastManualSaveAtRef.current < AUTO_SAVE_INTERVAL_MS) return;
+
+      const fingerprint = buildDraftFingerprint(snapshot);
+      if (fingerprint === lastSavedFingerprintRef.current) return;
+
+      void saveDraft({ reason: 'autosave', silent: true });
+    }, AUTO_SAVE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [saveDraft]);
 
   useEffect(() => {
     const colors = activeGroup?.colors ?? [];
@@ -414,37 +1221,119 @@ export default function App() {
     const pad = 12;
     const drawW = width - pad * 2;
     const drawH = height - pad * 2;
-    const baseCell = Math.max(1, Math.floor(Math.min(drawW / converted.cols, drawH / converted.rows)));
+    const viewStartCol = selectedLargeTile ? selectedLargeTile.startCol : 0;
+    const viewStartRow = selectedLargeTile ? selectedLargeTile.startRow : 0;
+    const viewCols = selectedLargeTile ? selectedLargeTile.colsPart : converted.cols;
+    const viewRows = selectedLargeTile ? selectedLargeTile.rowsPart : converted.rows;
+    const baseCell = Math.max(1, Math.floor(Math.min(drawW / viewCols, drawH / viewRows)));
     const cell = Math.max(1, Math.floor(baseCell * zoom));
-    const gridW = cell * converted.cols;
-    const gridH = cell * converted.rows;
+    const gridW = cell * viewCols;
+    const gridH = cell * viewRows;
     const ox = Math.floor((width - gridW) / 2 + panOffset.x);
     const oy = Math.floor((height - gridH) / 2 + panOffset.y);
 
-    renderMetaRef.current = { ox, oy, cell };
+    renderMetaRef.current = { ox, oy, cell, viewStartCol, viewStartRow, viewCols, viewRows };
 
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, height);
+    const fullTotal = converted.cols * converted.rows;
+    const fastRender = largeGridMode && fullTotal > GRID_SOFT_LIMIT && !selectedLargeTile;
+    const showConstruction = constructionMode && constructionTasks.length > 0;
 
-    for (const c of converted.cells) {
-      const x = ox + c.x * cell;
-      const y = oy + c.y * cell;
-      const isDimmed = !!focusColorName && !c.isEmpty && c.colorName !== focusColorName;
+    for (let vy = 0; vy < viewRows; vy++) {
+      for (let vx = 0; vx < viewCols; vx++) {
+        const srcX = viewStartCol + vx;
+        const srcY = viewStartRow + vy;
+        const srcIdx = srcY * converted.cols + srcX;
+        const c = converted.cells[srcIdx];
+        if (!c) continue;
+        const x = ox + vx * cell;
+        const y = oy + vy * cell;
+      const focusMatch = focusVisibleNameSet ? focusVisibleNameSet.has(c.colorName) : c.colorName === focusColorName;
+      const hasFocus = !!focusColorName;
+      const focusOutlineEnabled = !constructionMode;
+      const isDimmed = hasFocus && !c.isEmpty && !focusMatch;
       const displayHex = isDimmed ? toGrayHex(c.hex) : c.hex;
       ctx.fillStyle = displayHex;
       ctx.fillRect(x, y, cell, cell);
-      ctx.strokeStyle = '#dbe5df';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x, y, cell, cell);
+      if (isDimmed) {
+        // Wash out non-focused cells so the focused group remains visually dominant.
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.34)';
+        ctx.fillRect(x, y, cell, cell);
+      }
+      if (!fastRender) {
+        ctx.strokeStyle = '#dbe5df';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x, y, cell, cell);
+      }
 
-      if (showCode && cell >= 8 && !c.isEmpty) {
+      if (showConstruction) {
+        if (constructionShowDoneOverlay && constructionDoneCellSet.has(srcIdx)) {
+          ctx.fillStyle = toGrayHex(c.hex);
+          ctx.fillRect(x, y, cell, cell);
+          // Fade completed cells further so they read as "done" even if original colors are similar.
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.48)';
+          ctx.fillRect(x, y, cell, cell);
+          if (cell >= 4) {
+            const lineW = Math.max(2.1, Math.min(3.6, cell * 0.28));
+            ctx.strokeStyle = 'rgba(8, 52, 72, 0.88)';
+            ctx.lineWidth = lineW;
+            ctx.beginPath();
+            ctx.moveTo(x + 1, y + cell - 1);
+            ctx.lineTo(x + cell - 1, y + 1);
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(8, 52, 72, 0.72)';
+            ctx.lineWidth = Math.max(1.2, lineW * 0.8);
+            ctx.beginPath();
+            ctx.moveTo(x + 1, y + 1);
+            ctx.lineTo(x + cell - 1, y + cell - 1);
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(8, 52, 72, 0.92)';
+            ctx.lineWidth = Math.max(1.4, lineW * 0.7);
+            ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
+          }
+        }
+        if (constructionCurrentCellSet.has(srcIdx)) {
+          ctx.strokeStyle = 'rgba(245, 158, 11, 0.95)';
+          ctx.lineWidth = Math.max(1.5, Math.min(3, cell * 0.14));
+          ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
+        }
+      }
+
+      if (focusOutlineEnabled && hasFocus && focusMatch && !c.isEmpty) {
+        // Dual outline keeps focus cells readable even when focus color is close to grayscale.
+        const outer = Math.max(2, Math.min(4, cell * 0.18));
+        const inner = Math.max(1, Math.min(2.5, cell * 0.12));
+        ctx.strokeStyle = '#1f1f1f';
+        ctx.lineWidth = outer;
+        ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
+        ctx.strokeStyle = '#ffb703';
+        ctx.lineWidth = inner;
+        ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
+      }
+
+      if (!fastRender && showCode && cell >= 8 && !c.isEmpty) {
+        if (hasFocus && focusMatch) {
+          ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+          ctx.shadowBlur = Math.max(1, cell * 0.14);
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = 0;
+        } else {
+          ctx.shadowColor = 'transparent';
+          ctx.shadowBlur = 0;
+          ctx.shadowOffsetX = 0;
+          ctx.shadowOffsetY = 0;
+        }
         ctx.fillStyle = pickTextColor(displayHex);
         ctx.font = `${Math.max(9, Math.floor(cell * 0.35))}px Segoe UI`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(c.colorName, x + cell / 2, y + cell / 2);
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
       }
+    }
     }
 
     const guideStep = Math.max(1, Math.floor(guideEvery));
@@ -452,18 +1341,18 @@ export default function App() {
       ctx.save();
       ctx.strokeStyle = '#8ea39a';
       ctx.lineWidth = 1.5;
-      for (let gx = 0; gx <= converted.cols; gx += guideStep) {
+      for (let gx = 0; gx <= viewCols; gx += guideStep) {
         const x = ox + gx * cell + 0.5;
         ctx.beginPath();
         ctx.moveTo(x, oy);
-        ctx.lineTo(x, oy + converted.rows * cell);
+        ctx.lineTo(x, oy + viewRows * cell);
         ctx.stroke();
       }
-      for (let gy = 0; gy <= converted.rows; gy += guideStep) {
+      for (let gy = 0; gy <= viewRows; gy += guideStep) {
         const y = oy + gy * cell + 0.5;
         ctx.beginPath();
         ctx.moveTo(ox, y);
-        ctx.lineTo(ox + converted.cols * cell, y);
+        ctx.lineTo(ox + viewCols * cell, y);
         ctx.stroke();
       }
       ctx.restore();
@@ -472,24 +1361,24 @@ export default function App() {
     if (proMode && showRuler) {
       ctx.save();
       ctx.fillStyle = '#ffffffd9';
-      ctx.fillRect(ox, Math.max(0, oy - 20), converted.cols * cell, 20);
-      ctx.fillRect(Math.max(0, ox - 28), oy, 28, converted.rows * cell);
+      ctx.fillRect(ox, Math.max(0, oy - 20), viewCols * cell, 20);
+      ctx.fillRect(Math.max(0, ox - 28), oy, 28, viewRows * cell);
       ctx.fillStyle = '#465a52';
       ctx.font = '11px Segoe UI';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      for (let gx = 0; gx <= converted.cols; gx += guideStep) {
+      for (let gx = 0; gx <= viewCols; gx += guideStep) {
         const x = ox + gx * cell;
-        ctx.fillText(String(gx), x, Math.max(10, oy - 10));
+        ctx.fillText(String(viewStartCol + gx), x, Math.max(10, oy - 10));
       }
       ctx.textAlign = 'right';
-      for (let gy = 0; gy <= converted.rows; gy += guideStep) {
+      for (let gy = 0; gy <= viewRows; gy += guideStep) {
         const y = oy + gy * cell;
-        ctx.fillText(String(gy), Math.max(20, ox - 6), y);
+        ctx.fillText(String(viewStartRow + gy), Math.max(20, ox - 6), y);
       }
       ctx.restore();
     }
-  }, [converted, imageBitmap, cropRect, cropToolEnabled, cropHoverMode, showCode, focusColorName, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery]);
+  }, [converted, imageBitmap, cropRect, cropToolEnabled, cropHoverMode, showCode, focusColorName, focusVisibleNameSet, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery, largeGridMode, selectedLargeTile, constructionMode, constructionTasks.length, constructionShowDoneOverlay, constructionDoneCellSet, constructionCurrentCellSet]);
 
   useEffect(() => {
     drawGrid();
@@ -529,6 +1418,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!constructionMode) return;
+    setFocusColorMenuOpen(false);
+    setFocusNeighborEnabled(false);
+  }, [constructionMode]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
     const wrap = canvasWrapRef.current;
     if (!canvas || !wrap) return;
@@ -559,78 +1454,147 @@ export default function App() {
     fctx.fillStyle = '#ffffff';
     fctx.fillRect(0, 0, img.width, img.height);
     fctx.drawImage(img, 0, 0);
+    const sourceDataUrl = flattenCanvas.toDataURL('image/webp', 0.9) || flattenCanvas.toDataURL('image/png');
     const bitmap = await createImageBitmap(flattenCanvas);
     setImageBitmap(bitmap);
+    setImageDataUrl(sourceDataUrl);
     setConverted(null);
     setGridMeta('-');
     setCols(img.width);
     setRows(img.height);
     setCropRect({ x: 0, y: 0, w: img.width, h: img.height });
     setCropToolEnabled(true);
+    setOversizePlan(null);
+    setLargeGridMode(false);
+    setLargeViewTilePage(0);
     setZoom(1);
     setPanOffset({ x: 0, y: 0 });
     setImageMeta(`來源圖：${img.width} x ${img.height}`);
     setStatusText(`已載入圖片：${file.name}`);
   };
 
-  const onConvert = async () => {
+  const runConvert = async (options?: { overrideCols?: number; overrideRows?: number; allowOversize?: boolean; useLargeMode?: boolean }) => {
     if (!imageBitmap || !activeGroup) {
       setStatusText('請先確認圖片與色庫群組都已載入。');
       return;
     }
+    setConvertProgress({ running: true, phase: '準備中', percent: 0 });
 
-    const safeCols = clampInt(cols, 1, MAX_GRID_SIZE);
-    const safeRows = clampInt(rows, 1, MAX_GRID_SIZE);
+    try {
+      const safeCols = clampInt(options?.overrideCols ?? cols, 1, MAX_GRID_SIZE);
+      const safeRows = clampInt(options?.overrideRows ?? rows, 1, MAX_GRID_SIZE);
 
-    let sourceBitmap = imageBitmap;
-    const hasCrop =
-      !!cropRect &&
-      (cropRect.x !== 0 || cropRect.y !== 0 || cropRect.w !== imageBitmap.width || cropRect.h !== imageBitmap.height);
-    if (hasCrop && cropRect) {
-      sourceBitmap = await createImageBitmap(imageBitmap, cropRect.x, cropRect.y, cropRect.w, cropRect.h);
-    }
-
-    const dims = adjustGridByMode(safeCols, safeRows, sourceBitmap.width, sourceBitmap.height, mode);
-    const { processedCanvas, info } = buildProcessedCanvas(sourceBitmap, dims.cols, dims.rows, mode);
-
-    const imgData = processedCanvas
-      .getContext('2d')!
-      .getImageData(0, 0, processedCanvas.width, processedCanvas.height);
-
-    const cells: Cell[] = [];
-    for (let y = 0; y < dims.rows; y++) {
-      for (let x = 0; x < dims.cols; x++) {
-        const rgb = extractCellMedianRgb(imgData, x, y, dims.cols, dims.rows);
-        const mapped = mapColor(rgb, activeGroup.colors, strategy);
-        cells.push({ x, y, rgb, colorName: mapped.name, hex: mapped.hex });
+      let sourceBitmap = imageBitmap;
+      const hasCrop =
+        !!cropRect &&
+        (cropRect.x !== 0 || cropRect.y !== 0 || cropRect.w !== imageBitmap.width || cropRect.h !== imageBitmap.height);
+      if (hasCrop && cropRect) {
+        sourceBitmap = await createImageBitmap(imageBitmap, cropRect.x, cropRect.y, cropRect.w, cropRect.h);
       }
-    }
 
-    setConverted({
-      cols: dims.cols,
-      rows: dims.rows,
-      mode,
-      sourceW: sourceBitmap.width,
-      sourceH: sourceBitmap.height,
-      processInfo: info,
-      cells
-    });
-    setCols(dims.cols);
-    setRows(dims.rows);
-    setGridMeta(`格線：${dims.cols} x ${dims.rows} (${mode})`);
-    setUndoStack([]);
-    setRedoStack([]);
-    setLastPickedOldColor(null);
-    setCropToolEnabled(false);
-    setImageMeta(`來源圖：${sourceBitmap.width} x ${sourceBitmap.height}`);
-    setZoom(1);
-    setPanOffset({ x: 0, y: 0 });
-    setStatusText('轉換完成，可直接修色與匯出。');
+      const dims = adjustGridByMode(safeCols, safeRows, sourceBitmap.width, sourceBitmap.height, mode);
+      const finalCols = Math.max(1, Math.min(dims.cols, sourceBitmap.width));
+      const finalRows = Math.max(1, Math.min(dims.rows, sourceBitmap.height));
+      const totalCells = finalCols * finalRows;
+      if (!proMode && totalCells > GRID_SOFT_LIMIT && options?.allowOversize) {
+        setStatusText(`一般版限制建議上限 ${GRID_SOFT_LIMIT.toLocaleString()} 格，請先縮放後再轉換。`);
+        return;
+      }
+      if (!options?.allowOversize && totalCells > GRID_SOFT_LIMIT) {
+        const scaled = fitGridWithinLimit(finalCols, finalRows, GRID_SOFT_LIMIT);
+        setOversizePlan({
+          cols: finalCols,
+          rows: finalRows,
+          total: totalCells,
+          suggestCols: scaled.cols,
+          suggestRows: scaled.rows,
+          suggestTotal: scaled.cols * scaled.rows
+        });
+        setStatusText(`格數 ${totalCells.toLocaleString()} 超過建議上限 ${GRID_SOFT_LIMIT.toLocaleString()}。請選擇縮放或大圖模式。`);
+        return;
+      }
+      setOversizePlan(null);
+
+      setConvertProgress({ running: true, phase: '影像預處理', percent: 8 });
+      const { processedCanvas, info } = buildProcessedCanvas(sourceBitmap, finalCols, finalRows, mode);
+
+      const imgData = processedCanvas.getContext('2d')!.getImageData(0, 0, processedCanvas.width, processedCanvas.height);
+
+      let cells: Cell[] = [];
+      const total = finalRows * finalCols;
+      let done = 0;
+      setConvertProgress({ running: true, phase: '色彩辨識', percent: 10 });
+      for (let y = 0; y < finalRows; y++) {
+        for (let x = 0; x < finalCols; x++) {
+          const rgb = extractCellMedianRgb(imgData, x, y, finalCols, finalRows);
+          const mapped = mapColor(rgb, activeGroup.colors, 'lab_nearest');
+          cells.push({ x, y, rgb, colorName: mapped.name, hex: mapped.hex });
+          done += 1;
+        }
+        if (y % 10 === 0 || y === finalRows - 1) {
+          const p = 10 + Math.round((done / Math.max(1, total)) * 80);
+          setConvertProgress({ running: true, phase: '色彩辨識', percent: Math.min(90, p) });
+          await waitNextFrame();
+        }
+      }
+
+      let mergeInfo = '';
+      if (preMergeDeltaE > 0) {
+        setConvertProgress({ running: true, phase: '併色整理', percent: 94 });
+        const merged = mergeMappedCellsByDeltaE(cells, activeGroup.colors, preMergeDeltaE);
+        cells = merged.cells;
+        if (merged.mergedColorKinds > 0 || merged.changedCells > 0) {
+          mergeInfo = `；轉換前併色 ${merged.mergedColorKinds} 組、影響 ${merged.changedCells} 格`;
+        }
+      }
+
+      setConvertProgress({ running: true, phase: '完成整理', percent: 100 });
+      setConverted({
+        cols: finalCols,
+        rows: finalRows,
+        mode,
+        sourceW: sourceBitmap.width,
+        sourceH: sourceBitmap.height,
+        processInfo: info,
+        cells
+      });
+      setCols(finalCols);
+      setRows(finalRows);
+      setGridMeta(`格線：${finalCols} x ${finalRows} (${mode})`);
+      setUndoStack([]);
+      setRedoStack([]);
+      setHistoryItems([]);
+      setLastPickedOldColor(null);
+      setCropToolEnabled(false);
+      setImageMeta(`來源圖：${sourceBitmap.width} x ${sourceBitmap.height}`);
+      setZoom(1);
+      setPanOffset({ x: 0, y: 0 });
+      const enableLarge = proMode && (!!options?.useLargeMode || totalCells > GRID_SOFT_LIMIT);
+      setLargeGridMode(enableLarge);
+      setLargeViewTilePage(0);
+      setLargeOperationScope('tile');
+      if (finalCols !== dims.cols || finalRows !== dims.rows) {
+        setStatusText(`轉換完成；裁切後像素不足，格線自動調整為 ${finalCols}x${finalRows}${mergeInfo}。`);
+      } else {
+        setStatusText(`轉換完成，可直接修色與匯出${mergeInfo}。`);
+      }
+    } finally {
+      setTimeout(() => setConvertProgress({ running: false, phase: '', percent: 0 }), 350);
+    }
   };
 
-  const pushUndo = (changes: CellChange[]) => {
-    setUndoStack((prev) => [...prev, changes]);
+  const onConvert = async () => {
+    await runConvert();
+  };
+
+  const addHistory = (text: string) => {
+    setHistoryItems((prev) => [text, ...prev].slice(0, 8));
+  };
+
+  const pushUndo = (changes: CellChange[], label: string) => {
+    setUndoStack((prev) => [...prev, { changes, label }]);
     setRedoStack([]);
+    addHistory(label);
   };
 
   const getCellIndexByPointer = (clientX: number, clientY: number) => {
@@ -641,11 +1605,14 @@ export default function App() {
     const rect = canvas.getBoundingClientRect();
     const x = (clientX - rect.left) * (canvas.width / rect.width);
     const y = (clientY - rect.top) * (canvas.height / rect.height);
-    const { ox, oy, cell } = renderMetaRef.current;
+    const { ox, oy, cell, viewStartCol, viewStartRow, viewCols, viewRows } = renderMetaRef.current;
     const cx = Math.floor((x - ox) / cell);
     const cy = Math.floor((y - oy) / cell);
-    if (cx < 0 || cy < 0 || cx >= converted.cols || cy >= converted.rows) return null;
-    return cy * converted.cols + cx;
+    if (cx < 0 || cy < 0 || cx >= viewCols || cy >= viewRows) return null;
+    const gx = viewStartCol + cx;
+    const gy = viewStartRow + cy;
+    if (gx < 0 || gy < 0 || gx >= converted.cols || gy >= converted.rows) return null;
+    return gy * converted.cols + gx;
   };
 
   const getPreviewPointer = (clientX: number, clientY: number) => {
@@ -706,7 +1673,19 @@ export default function App() {
     return { x: l, y: t, w: Math.max(1, r - l + 1), h: Math.max(1, b - t + 1) };
   };
 
-  const applyEditByIndex = (idx: number) => {
+  const getScopeBounds = () => {
+    if (largeGridMode && largeOperationScope === 'tile' && selectedLargeTile) {
+      return {
+        startCol: selectedLargeTile.startCol,
+        startRow: selectedLargeTile.startRow,
+        endCol: selectedLargeTile.startCol + selectedLargeTile.colsPart - 1,
+        endRow: selectedLargeTile.startRow + selectedLargeTile.rowsPart - 1
+      };
+    }
+    return null;
+  };
+
+  const applyBrushByIndex = (idx: number) => {
     if (!converted) return;
     const isPaintToEmpty = editTool === 'paint' && editColorName === EMPTY_EDIT_COLOR_NAME;
     const chosen =
@@ -715,35 +1694,147 @@ export default function App() {
         : null;
     if (editTool === 'paint' && !isPaintToEmpty && !chosen) return;
 
-    const prev = converted.cells[idx];
-    if (!prev) return;
+    const centerX = idx % converted.cols;
+    const centerY = Math.floor(idx / converted.cols);
+    const half = Math.floor((brushSize - 1) / 2);
+    const startX = centerX - half;
+    const startY = centerY - half;
+    const changes: CellChange[] = [];
+    const nextCells = [...converted.cells];
 
-    const before = { ...prev };
-    const after =
-      editTool === 'erase' || isPaintToEmpty
-        ? { ...prev, colorName: '', hex: '#FFFFFF', isEmpty: true }
-        : { ...prev, colorName: chosen!.name, hex: chosen!.hex, isEmpty: false };
-    if (editTool === 'paint' && !isPaintToEmpty && !before.isEmpty && before.colorName === chosen!.name) return;
-    if (editTool === 'erase' && before.isEmpty) return;
-    if (isPaintToEmpty && before.isEmpty) return;
+    for (let by = 0; by < brushSize; by++) {
+      for (let bx = 0; bx < brushSize; bx++) {
+        const x = startX + bx;
+        const y = startY + by;
+        if (x < 0 || y < 0 || x >= converted.cols || y >= converted.rows) continue;
+        const cellIdx = y * converted.cols + x;
+        const prev = nextCells[cellIdx];
+        if (!prev) continue;
+        const before = { ...prev };
+        const after =
+          editTool === 'erase' || isPaintToEmpty
+            ? { ...prev, colorName: '', hex: '#FFFFFF', isEmpty: true }
+            : { ...prev, colorName: chosen!.name, hex: chosen!.hex, isEmpty: false };
+        if (editTool === 'paint' && !isPaintToEmpty && !before.isEmpty && before.colorName === chosen!.name) continue;
+        if ((editTool === 'erase' || isPaintToEmpty) && before.isEmpty) continue;
+        nextCells[cellIdx] = after;
+        changes.push({ idx: cellIdx, before, after });
+      }
+    }
 
-    setLastPickedOldColor(editTool === 'paint' && !isPaintToEmpty && !before.isEmpty ? before.colorName : null);
-    pushUndo([{ idx, before, after }]);
-    setConverted((old) => {
-      if (!old) return old;
-      const nextCells = [...old.cells];
-      nextCells[idx] = after;
-      return { ...old, cells: nextCells };
-    });
+    if (!changes.length) return;
+    const firstBefore = changes[0].before;
+    setLastPickedOldColor(editTool === 'paint' && !isPaintToEmpty && !firstBefore.isEmpty ? firstBefore.colorName : null);
+    const toolLabel = editTool === 'erase' || isPaintToEmpty ? '橡皮擦' : '上色';
+    pushUndo(changes, `${toolLabel} ${brushSize}x${brushSize}（${changes.length} 格）`);
+    setConverted({ ...converted, cells: nextCells });
+  };
+
+  const applyBucketByIndex = (idx: number) => {
+    if (!converted) return;
+    if (!activeGroup || !editColorName) return;
+    const isToEmpty = editColorName === EMPTY_EDIT_COLOR_NAME;
+    const chosen = isToEmpty ? null : activeGroup.colors.find((c) => c.name === editColorName) ?? null;
+    if (!isToEmpty && !chosen) return;
+
+    const target = converted.cells[idx];
+    if (!target) return;
+    const targetIsEmpty = !!target.isEmpty;
+    const targetName = target.colorName;
+    if (!isToEmpty && !targetIsEmpty && targetName === chosen!.name) return;
+    if (isToEmpty && targetIsEmpty) return;
+
+    const matchesTarget = (cell: Cell) => {
+      if (!!cell.isEmpty !== targetIsEmpty) return false;
+      if (targetIsEmpty) return true;
+      return cell.colorName === targetName;
+    };
+    const scope = getScopeBounds();
+    const inScope = (i: number) => {
+      if (!scope) return true;
+      const x = i % converted.cols;
+      const y = Math.floor(i / converted.cols);
+      return x >= scope.startCol && x <= scope.endCol && y >= scope.startRow && y <= scope.endRow;
+    };
+
+    const targetIndices: number[] = [];
+    if (bucketMode === 'global') {
+      converted.cells.forEach((cell, i) => {
+        if (!inScope(i)) return;
+        if (matchesTarget(cell)) targetIndices.push(i);
+      });
+    } else {
+      const seen = new Set<number>();
+      const q: number[] = [idx];
+      while (q.length) {
+        const cur = q.pop()!;
+        if (seen.has(cur)) continue;
+        seen.add(cur);
+        if (!inScope(cur)) continue;
+        const cell = converted.cells[cur];
+        if (!cell || !matchesTarget(cell)) continue;
+        targetIndices.push(cur);
+        const x = cur % converted.cols;
+        const y = Math.floor(cur / converted.cols);
+        if (x > 0) q.push(cur - 1);
+        if (x + 1 < converted.cols) q.push(cur + 1);
+        if (y > 0) q.push(cur - converted.cols);
+        if (y + 1 < converted.rows) q.push(cur + converted.cols);
+      }
+    }
+
+    const changes: CellChange[] = [];
+    const nextCells = [...converted.cells];
+    for (const i of targetIndices) {
+      const before = { ...nextCells[i] };
+      const after = isToEmpty
+        ? { ...before, colorName: '', hex: '#FFFFFF', isEmpty: true }
+        : { ...before, colorName: chosen!.name, hex: chosen!.hex, isEmpty: false };
+      if (before.colorName === after.colorName && before.isEmpty === after.isEmpty && before.hex === after.hex) continue;
+      nextCells[i] = after;
+      changes.push({ idx: i, before, after });
+    }
+    if (!changes.length) return;
+    pushUndo(changes, `油漆桶-${bucketMode === 'global' ? '全圖同色' : '連通區'}（${changes.length} 格）`);
+    setConverted({ ...converted, cells: nextCells });
   };
 
   const onCanvasClick = (ev: React.MouseEvent<HTMLCanvasElement>) => {
     if (cropToolEnabled && imageBitmap) return;
     if (!converted) return;
-    if (editTool === 'pan') return;
     const idx = getCellIndexByPointer(ev.clientX, ev.clientY);
     if (idx == null) return;
-    applyEditByIndex(idx);
+    if (constructionMode) {
+      if (editTool === 'pan') return;
+      if (editTool !== 'picker') return;
+      const cell = converted.cells[idx];
+      if (!cell || cell.isEmpty) {
+        clearConstructionFocus();
+        return;
+      }
+      setFocusColorName(cell.colorName);
+      const taskId = constructionCellTaskMap.get(idx);
+      if (taskId) setConstructionCurrentTaskId(taskId);
+      setStatusText(`施工模式：已將 ${cell.colorName} 設為焦點色。`);
+      return;
+    }
+    if (editTool === 'pan') return;
+    if (editTool === 'picker') {
+      const cell = converted.cells[idx];
+      if (!cell || cell.isEmpty) {
+        setFocusColorName('');
+        setStatusText('該格為空白，已清除焦點。');
+        return;
+      }
+      setFocusColorName(cell.colorName);
+      setStatusText(`已將 ${cell.colorName} 設為焦點色。`);
+      return;
+    }
+    if (editTool === 'bucket') {
+      applyBucketByIndex(idx);
+      return;
+    }
+    applyBrushByIndex(idx);
   };
 
   const onCanvasMouseDown = (ev: React.MouseEvent<HTMLCanvasElement>) => {
@@ -768,11 +1859,13 @@ export default function App() {
       panLastPointRef.current = { x: ev.clientX, y: ev.clientY };
       return;
     }
+    if (constructionMode) return;
+    if (editTool === 'bucket' || editTool === 'picker') return;
     if (editTool !== 'erase' && editTool !== 'paint') return;
     const idx = getCellIndexByPointer(ev.clientX, ev.clientY);
     if (idx == null) return;
     lastDragCellIdxRef.current = idx;
-    applyEditByIndex(idx);
+    applyBrushByIndex(idx);
   };
 
   const onCanvasMouseMove = (ev: React.MouseEvent<HTMLCanvasElement>) => {
@@ -892,12 +1985,14 @@ export default function App() {
       panLastPointRef.current = { x: ev.clientX, y: ev.clientY };
       return;
     }
+    if (constructionMode) return;
+    if (editTool === 'bucket') return;
     if (editTool !== 'erase' && editTool !== 'paint') return;
     const idx = getCellIndexByPointer(ev.clientX, ev.clientY);
     if (idx == null) return;
     if (idx === lastDragCellIdxRef.current) return;
     lastDragCellIdxRef.current = idx;
-    applyEditByIndex(idx);
+    applyBrushByIndex(idx);
   };
 
   const onCanvasMouseLeave = () => {
@@ -941,9 +2036,15 @@ export default function App() {
       setStatusText('焦點色與替換色相同，無需替換。');
       return;
     }
+    const scope = getScopeBounds();
 
     const changes: CellChange[] = [];
     const nextCells = converted.cells.map((cell, idx) => {
+      if (scope) {
+        const x = idx % converted.cols;
+        const y = Math.floor(idx / converted.cols);
+        if (x < scope.startCol || x > scope.endCol || y < scope.startRow || y > scope.endRow) return cell;
+      }
       if (cell.isEmpty || cell.colorName !== focusColorName) return cell;
       const before = { ...cell };
       const after = isPaintToEmpty
@@ -958,34 +2059,359 @@ export default function App() {
       return;
     }
 
-    pushUndo(changes);
+    pushUndo(changes, `焦點色全替換（${changes.length} 格）`);
     setConverted({ ...converted, cells: nextCells });
-    setStatusText(isPaintToEmpty ? `已將焦點色 ${focusColorName} 全部清空。` : `已將焦點色 ${focusColorName} 全部替換為 ${chosen!.name}。`);
+    const scopeText = largeGridMode && largeOperationScope === 'tile' && selectedLargeTile ? '（當前分塊）' : '（全圖）';
+    setStatusText(
+      isPaintToEmpty
+        ? `已將焦點色 ${focusColorName} 全部清空${scopeText}。`
+        : `已將焦點色 ${focusColorName} 全部替換為 ${chosen!.name}${scopeText}。`
+    );
+  };
+
+  const addOneCellOutline = () => {
+    if (!converted || !activeGroup || !editColorName) return;
+    if (editColorName === EMPTY_EDIT_COLOR_NAME) {
+      setStatusText('外框需選擇一個實際色號。');
+      return;
+    }
+    const chosen = activeGroup.colors.find((c) => c.name === editColorName) ?? null;
+    if (!chosen) {
+      setStatusText('找不到外框色號。');
+      return;
+    }
+    const scope = getScopeBounds();
+    const sourceCells = converted.cells;
+    const inScope = (idx: number) => {
+      if (!scope) return true;
+      const x = idx % converted.cols;
+      const y = Math.floor(idx / converted.cols);
+      return x >= scope.startCol && x <= scope.endCol && y >= scope.startRow && y <= scope.endRow;
+    };
+    const deltas = [-1, 0, 1];
+    const changes: CellChange[] = [];
+    const nextCells = [...converted.cells];
+
+    for (let y = 0; y < converted.rows; y++) {
+      for (let x = 0; x < converted.cols; x++) {
+        const idx = y * converted.cols + x;
+        if (!inScope(idx)) continue;
+        const cell = sourceCells[idx];
+        if (!cell || !cell.isEmpty) continue;
+        let shouldOutline = false;
+        for (const dy of deltas) {
+          for (const dx of deltas) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx;
+            const ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= converted.cols || ny >= converted.rows) continue;
+            const nIdx = ny * converted.cols + nx;
+            if (!inScope(nIdx)) continue;
+            const n = sourceCells[nIdx];
+            if (n && !n.isEmpty) {
+              shouldOutline = true;
+              break;
+            }
+          }
+          if (shouldOutline) break;
+        }
+        if (!shouldOutline) continue;
+        const before = { ...cell };
+        const after = { ...cell, colorName: chosen.name, hex: chosen.hex, isEmpty: false };
+        nextCells[idx] = after;
+        changes.push({ idx, before, after });
+      }
+    }
+
+    if (!changes.length) {
+      setStatusText('沒有可新增外框的位置。');
+      return;
+    }
+
+    pushUndo(changes, `外框1格（${changes.length} 格）`);
+    setConverted({ ...converted, cells: nextCells });
+    const scopeText = largeGridMode && largeOperationScope === 'tile' && selectedLargeTile ? '（當前分塊）' : '（全圖）';
+    setStatusText(`已新增 1 格外框，共 ${changes.length} 格，色號 ${chosen.name}${scopeText}。`);
+  };
+
+  const toggleConstructionDone = (taskId: string, done?: boolean) => {
+    setConstructionDoneMap((prev) => ({ ...prev, [taskId]: done ?? !prev[taskId] }));
+  };
+
+  const setFocusFromTask = (taskId: string) => {
+    const task = constructionTasks.find((t) => t.id === taskId);
+    if (!task) return;
+    if (constructionCurrentTaskId === task.id) {
+      clearConstructionFocus();
+      return;
+    }
+    setConstructionCurrentTaskId(task.id);
+    if (constructionStrategy === 'color') {
+      setFocusColorName(task.title);
+      return;
+    }
+    const firstIdx = task.cellIndices.find((idx) => {
+      const c = converted?.cells[idx];
+      return !!c && !c.isEmpty;
+    });
+    if (firstIdx == null || !converted) return;
+    const cell = converted.cells[firstIdx];
+    if (!cell || cell.isEmpty) return;
+    setFocusColorName(cell.colorName);
+  };
+
+  const clearConstructionFocus = () => {
+    setFocusColorName('');
+    setConstructionCurrentTaskId('');
+    setStatusText('施工模式：已清除焦點與任務選取。');
+  };
+
+  const reorderConstructionTask = (fromId: string, toId: string) => {
+    if (!proMode || !constructionTasks.length || fromId === toId) return;
+    setConstructionOrderRule('manual');
+    const ids = constructionTasks.map((t) => t.id);
+    const from = ids.indexOf(fromId);
+    const to = ids.indexOf(toId);
+    if (from < 0 || to < 0) return;
+    const next = [...ids];
+    const [moving] = next.splice(from, 1);
+    next.splice(to, 0, moving);
+    setConstructionCustomOrder(next);
+  };
+
+  const saveConstructionTemplate = () => {
+    if (!proMode || !constructionTasks.length) return;
+    const name = constructionTemplateName.trim() || `模板 ${constructionTemplates.length + 1}`;
+    const baseRule: Exclude<ConstructionOrderRule, 'manual'> =
+      constructionOrderRule === 'manual' ? 'count_desc' : constructionOrderRule;
+    let payload: ConstructionTemplate = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      strategy: constructionStrategy,
+      rule: baseRule
+    };
+    if (constructionOrderRule === 'manual') {
+      if (constructionStrategy !== 'color') {
+        setStatusText('手動拖曳僅在「顏色優先」時可自動辨識跨作品模板。');
+        return;
+      }
+      payload = {
+        ...payload,
+        rule: 'count_desc',
+        colorPriority: constructionTasks.map((t) => t.title),
+        inferredFromManual: true
+      };
+    }
+    setConstructionTemplates((prev) => [...prev, payload]);
+    setConstructionTemplateId(payload.id);
+    setStatusText(
+      payload.inferredFromManual
+        ? `已儲存施工模板：${name}（已自動辨識手動拖曳色序）`
+        : `已儲存施工模板：${name}`
+    );
+  };
+
+  const applyInferredConstructionRule = () => {
+    if (!constructionRuleInference) return;
+    setConstructionOrderRule(constructionRuleInference.bestRule);
+    setConstructionCustomOrder([]);
+    setStatusText(
+      `已套用最接近規則：${formatConstructionRuleLabel(constructionRuleInference.bestRule)}（相似度 ${(constructionRuleInference.bestScore * 100).toFixed(1)}%）`
+    );
+  };
+
+  const applyConstructionTemplate = () => {
+    if (!proMode || !constructionTemplateId) return;
+    const tpl = constructionTemplates.find((t) => t.id === constructionTemplateId);
+    if (!tpl) return;
+    setConstructionStrategy(tpl.strategy);
+    if (tpl.strategy === 'color' && tpl.colorPriority?.length && converted) {
+      const tasks = buildConstructionTasks(converted, 'color');
+      const orderedIds = orderTaskIdsByColorPriority(tasks, tpl.colorPriority);
+      setConstructionOrderRule('manual');
+      setConstructionCustomOrder(orderedIds);
+    } else {
+      setConstructionOrderRule(tpl.rule);
+      setConstructionCustomOrder([]);
+    }
+    setStatusText(`已套用施工模板：${tpl.name}`);
+  };
+
+  const deleteConstructionTemplate = () => {
+    if (!proMode || !constructionTemplateId) return;
+    const tpl = constructionTemplates.find((t) => t.id === constructionTemplateId);
+    setConstructionTemplates((prev) => prev.filter((t) => t.id !== constructionTemplateId));
+    setConstructionTemplateId('');
+    setStatusText(`已刪除施工模板${tpl ? `：${tpl.name}` : ''}`);
   };
 
   const undo = () => {
     if (!undoStack.length || !converted) return;
-    const changes = undoStack[undoStack.length - 1];
+    const batch = undoStack[undoStack.length - 1];
+    const changes = batch.changes;
     const nextCells = [...converted.cells];
     for (const ch of changes) nextCells[ch.idx] = { ...ch.before };
     setConverted({ ...converted, cells: nextCells });
     setUndoStack((prev) => prev.slice(0, -1));
-    setRedoStack((prev) => [...prev, changes]);
+    setRedoStack((prev) => [...prev, batch]);
+    addHistory(`Undo：${batch.label}`);
   };
 
   const redo = () => {
     if (!redoStack.length || !converted) return;
-    const changes = redoStack[redoStack.length - 1];
+    const batch = redoStack[redoStack.length - 1];
+    const changes = batch.changes;
     const nextCells = [...converted.cells];
     for (const ch of changes) nextCells[ch.idx] = { ...ch.after };
     setConverted({ ...converted, cells: nextCells });
     setRedoStack((prev) => prev.slice(0, -1));
-    setUndoStack((prev) => [...prev, changes]);
+    setUndoStack((prev) => [...prev, batch]);
+    addHistory(`Redo：${batch.label}`);
+  };
+
+  const rollbackToStep = (remainingUndoCount: number) => {
+    if (!converted) return;
+    if (remainingUndoCount < 0) remainingUndoCount = 0;
+    if (remainingUndoCount >= undoStack.length) return;
+    const steps = undoStack.length - remainingUndoCount;
+    let nextCells = [...converted.cells];
+    const nextUndo = [...undoStack];
+    const movedToRedo: ChangeBatch[] = [];
+    for (let i = 0; i < steps; i++) {
+      const batch = nextUndo.pop();
+      if (!batch) break;
+      for (const ch of batch.changes) nextCells[ch.idx] = { ...ch.before };
+      movedToRedo.push(batch);
+    }
+    setConverted({ ...converted, cells: nextCells });
+    setUndoStack(nextUndo);
+    setRedoStack((prev) => [...prev, ...movedToRedo]);
+    addHistory(`回溯 ${steps} 步`);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape' && isCanvasFullscreen) {
+        ev.preventDefault();
+        setIsCanvasFullscreen(false);
+        return;
+      }
+      const target = ev.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isTyping = !!target && (tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable);
+      if (isTyping) return;
+
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.undo)) {
+        ev.preventDefault();
+        undo();
+        return;
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.redo)) {
+        ev.preventDefault();
+        redo();
+        return;
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolPan)) {
+        ev.preventDefault();
+        setEditTool('pan');
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolPaint)) setEditTool('paint');
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolErase)) setEditTool('erase');
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolBucket)) setEditTool('bucket');
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolPicker)) setEditTool('picker');
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toggleCode)) setShowCode((v) => !v);
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.brushDown)) setBrushSize((v) => Math.max(1, v - 1));
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.brushUp)) setBrushSize((v) => Math.min(100, v + 1));
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.zoomIn)) {
+        ev.preventDefault();
+        setZoom((v) => Math.min(8, Number((v + 0.1).toFixed(2))));
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.zoomOut)) {
+        ev.preventDefault();
+        setZoom((v) => Math.max(0.25, Number((v - 0.1).toFixed(2))));
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.zoomReset)) {
+        setZoom(1);
+        setPanOffset({ x: 0, y: 0 });
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toggleCanvasFullscreen)) {
+        ev.preventDefault();
+        setIsCanvasFullscreen((v) => !v);
+      }
+      if (proMode && largeGridMode && pdfPagination && pdfPagination.totalTiles > 1) {
+        if (matchesShortcutSet(ev, effectiveShortcutConfig.tilePrev)) {
+          ev.preventDefault();
+          setLargeViewTilePage((cur) => {
+            const curPage = cur > 0 ? cur : 1;
+            return Math.max(1, curPage - 1);
+          });
+          return;
+        }
+        if (matchesShortcutSet(ev, effectiveShortcutConfig.tileNext)) {
+          ev.preventDefault();
+          setLargeViewTilePage((cur) => {
+            const curPage = cur > 0 ? cur : 0;
+            return Math.min(pdfPagination.totalTiles, curPage + 1);
+          });
+          return;
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [effectiveShortcutConfig, isCanvasFullscreen, largeGridMode, pdfPagination, proMode, redo, undo]);
+
+  const getExportPreflight = useCallback(
+    (kind: 'csv' | 'pdf') => {
+      const checks: Array<{ ok: boolean; label: string; detail: string }> = [];
+      checks.push({
+        ok: !!converted,
+        label: '轉換資料',
+        detail: converted ? '已完成轉換。' : '尚未轉換圖片，請先點「開始轉換」。'
+      });
+      checks.push({
+        ok: !!converted && converted.cols > 0 && converted.rows > 0 && converted.cells.length > 0,
+        label: '格線資料',
+        detail: converted ? `目前 ${converted.cols}x${converted.rows}，格子數 ${converted.cells.length}` : '無資料'
+      });
+      checks.push({
+        ok: statsRows.length > 0,
+        label: '色號統計',
+        detail: statsRows.length ? `共 ${statsRows.length} 色號` : '沒有可匯出的色號統計資料。'
+      });
+      if (kind === 'pdf' && converted) {
+        const expected = converted.cols * converted.rows;
+        checks.push({
+          ok: converted.cells.length === expected,
+          label: 'PDF 頁面資料一致性',
+          detail: `${converted.cells.length}/${expected}`
+        });
+      }
+      checks.push({
+        ok: kind !== 'pdf' || !isPdfBusy,
+        label: '匯出狀態',
+        detail: kind === 'pdf' && isPdfBusy ? 'PDF 仍在處理中。' : '可開始匯出。'
+      });
+      return checks;
+    },
+    [converted, isPdfBusy, statsRows.length]
+  );
+
+  useEffect(() => {
+    setPreflightCsv(getExportPreflight('csv'));
+    setPreflightPdf(getExportPreflight('pdf'));
+  }, [getExportPreflight]);
+
+  const runExportPreflight = (kind: 'csv' | 'pdf') => {
+    const checks = getExportPreflight(kind);
+    const failed = checks.find((c) => !c.ok);
+    return failed ? `${failed.label}：${failed.detail}` : null;
   };
 
   const exportCsv = () => {
-    if (!statsRows.length) {
-      setStatusText('沒有可匯出的統計資料。');
+    const preflight = runExportPreflight('csv');
+    if (preflight) {
+      setStatusText(`匯出前檢查失敗：${preflight}`);
       return;
     }
     const lines = ['color_name,count'];
@@ -997,15 +2423,16 @@ export default function App() {
   };
 
   const exportPdfLike = async () => {
-    if (!converted) {
-      setStatusText('尚未有可匯出的圖紙。');
+    const preflight = runExportPreflight('pdf');
+    if (preflight) {
+      setStatusText(`匯出前檢查失敗：${preflight}`);
       return;
     }
 
     try {
       setIsPdfBusy(true);
       const { PDFDocument, StandardFonts, rgb } = await getPdfRuntime();
-      const beadMm = 2.6;
+      const beadMm = PDF_BEAD_MM;
       const pdfDoc = await PDFDocument.create();
       pdfDoc.setCreator('PixChi');
       pdfDoc.setProducer('PixChi');
@@ -1120,36 +2547,47 @@ export default function App() {
         const xPages = Math.ceil(converted.cols / tileCols);
         const yPages = Math.ceil(converted.rows / tileRows);
         const totalTiles = xPages * yPages;
-        let pageNo = 1;
-
-        // Summary page with stats
-        const summary = pdfDoc.addPage([pageW, pageH]);
-        drawHeader(summary, `群組：${activeGroup?.name ?? ''} | 格線：${converted.cols}x${converted.rows} | 自動分頁 ${xPages}x${yPages}`);
-        drawSideStats(summary, margin, pageH - margin - headerH - 8);
-
+        const from = proMode ? clampInt(Math.min(pdfPageFrom, pdfPageTo), 1, totalTiles) : 1;
+        const to = proMode ? clampInt(Math.max(pdfPageFrom, pdfPageTo), 1, totalTiles) : totalTiles;
+        const exportTiles: PdfTileInfo[] = [];
+        let absolutePage = 1;
         for (let py = 0; py < yPages; py++) {
           for (let px = 0; px < xPages; px++) {
             const startCol = px * tileCols;
             const startRow = py * tileRows;
             const colsPart = Math.min(tileCols, converted.cols - startCol);
             const rowsPart = Math.min(tileRows, converted.rows - startRow);
-            const slice = sliceConverted(converted, startCol, startRow, colsPart, rowsPart);
-            const tileCanvas = buildExportGridCanvas(slice, showCode, beadMm, {
-              exportScale,
-              showRuler: proMode && showRuler,
-              showGuide: proMode && showGuide,
-              guideEvery
-            });
-            const tileImg = await pdfDoc.embedPng(dataUrlToBytes(tileCanvas.toDataURL('image/png')));
-            const page = pdfDoc.addPage([pageW, pageH]);
-            const partText = `分頁 ${pageNo}/${totalTiles} | X:${startCol + 1}-${startCol + colsPart}  Y:${startRow + 1}-${startRow + rowsPart}`;
-            drawHeader(page, partText);
-            const drawW = mmToPt(colsPart * beadMm);
-            const drawH = mmToPt(rowsPart * beadMm);
-            const y = contentTop - drawH;
-            page.drawImage(tileImg, { x: margin, y, width: drawW, height: drawH });
-            pageNo += 1;
+            if (absolutePage >= from && absolutePage <= to) {
+              exportTiles.push({ pageNo: absolutePage, px, py, startCol, startRow, colsPart, rowsPart });
+            }
+            absolutePage += 1;
           }
+        }
+
+        // Summary page with stats
+        const summary = pdfDoc.addPage([pageW, pageH]);
+        drawHeader(
+          summary,
+          `群組：${activeGroup?.name ?? ''} | 格線：${converted.cols}x${converted.rows} | 自動分頁 ${xPages}x${yPages} | 匯出頁 ${from}-${to}/${totalTiles}`
+        );
+        drawSideStats(summary, margin, pageH - margin - headerH - 8);
+
+        for (const tile of exportTiles) {
+          const slice = sliceConverted(converted, tile.startCol, tile.startRow, tile.colsPart, tile.rowsPart);
+          const tileCanvas = buildExportGridCanvas(slice, showCode, beadMm, {
+            exportScale,
+            showRuler: proMode && showRuler,
+            showGuide: proMode && showGuide,
+            guideEvery
+          });
+          const tileImg = await pdfDoc.embedPng(dataUrlToBytes(tileCanvas.toDataURL('image/png')));
+          const page = pdfDoc.addPage([pageW, pageH]);
+          const partText = `分頁 ${tile.pageNo}/${totalTiles} | X:${tile.startCol + 1}-${tile.startCol + tile.colsPart}  Y:${tile.startRow + 1}-${tile.startRow + tile.rowsPart}`;
+          drawHeader(page, partText);
+          const drawW = mmToPt(tile.colsPart * beadMm);
+          const drawH = mmToPt(tile.rowsPart * beadMm);
+          const y = contentTop - drawH;
+          page.drawImage(tileImg, { x: margin, y, width: drawW, height: drawH });
         }
       }
 
@@ -1222,7 +2660,6 @@ export default function App() {
       setProjectName(data.projectName || '未命名專案');
       setActiveGroupName(data.activeGroupName || '');
       setMode(data.mode || 'fit');
-      setStrategy(data.strategy || 'lab_nearest');
       setShowCode(data.showCode ?? true);
       setConverted(restoredConverted);
       setCols(restoredConverted.cols);
@@ -1232,6 +2669,7 @@ export default function App() {
       setFocusColorName('');
       setUndoStack([]);
       setRedoStack([]);
+      setHistoryItems([]);
       setZoom(1);
       setPanOffset({ x: 0, y: 0 });
       setStatusText('已從 PDF 還原畫布。');
@@ -1245,6 +2683,7 @@ export default function App() {
 
   const resetAll = () => {
     setImageBitmap(null);
+    setImageDataUrl(null);
     setCropRect(null);
     setConverted(null);
     setImageMeta('-');
@@ -1255,13 +2694,184 @@ export default function App() {
     setEditColorMenuOpen(false);
     setUndoStack([]);
     setRedoStack([]);
+    setHistoryItems([]);
     setLastPickedOldColor(null);
     setZoom(1);
     setPanOffset({ x: 0, y: 0 });
+    setOversizePlan(null);
+    setLargeGridMode(false);
+    setLargeViewTilePage(0);
     setStatusText('已清空結果。');
   };
 
-  const canvasCursor = !converted && cropToolEnabled && imageBitmap
+  const updateShortcutByText = (key: keyof typeof SHORTCUTS, input: string) => {
+    const values = input
+      .split(',')
+      .map((x) => x.trim().toLowerCase())
+      .filter(Boolean);
+    setShortcutConfig((prev) => ({ ...prev, [key]: values.length ? values : [...SHORTCUTS[key]] }));
+  };
+
+  const resetShortcutDefaults = () => {
+    setShortcutConfig(buildDefaultShortcutConfig());
+  };
+
+  const navigatePage = (next: 'main' | 'palette') => {
+    setPage(next);
+    if (typeof window !== 'undefined') {
+      window.location.hash = next === 'palette' ? '#/palette' : '#/';
+    }
+  };
+
+  const createCustomGroup = (source?: PaletteGroup | null) => {
+    const baseName = source ? `${source.name}-自訂` : '新自訂色庫';
+    const nextNameBase = (paletteNewGroupName || baseName).trim();
+    if (!nextNameBase) return;
+    const existingNames = new Set(groups.map((g) => g.name));
+    let nextName = nextNameBase;
+    let seq = 2;
+    while (existingNames.has(nextName)) {
+      nextName = `${nextNameBase}-${seq}`;
+      seq += 1;
+    }
+    const nextGroup: CustomPaletteGroup = {
+      id: makeCustomPaletteId(),
+      name: nextName,
+      colors: (source?.colors ?? []).map((c) => ({ name: c.name, hex: c.hex.toUpperCase() }))
+    };
+    setCustomPaletteGroups((prev) => [...prev, nextGroup]);
+    setPaletteEditGroupId(nextGroup.id);
+    setPaletteNewGroupName(nextName);
+    setPaletteTab('custom');
+    setStatusText(`已建立自訂群組：${nextName}`);
+  };
+
+  const updateCustomGroupName = () => {
+    if (!editablePaletteGroup) return;
+    const next = paletteNewGroupName.trim();
+    if (!next) {
+      setStatusText('群組名稱不可為空。');
+      return;
+    }
+    if (groups.some((g) => g.name === next && g.id !== editablePaletteGroup.id)) {
+      setStatusText('群組名稱重複，請更換。');
+      return;
+    }
+    setCustomPaletteGroups((prev) => prev.map((g) => (g.id === editablePaletteGroup.id ? { ...g, name: next } : g)));
+    setStatusText('自訂群組名稱已更新。');
+  };
+
+  const deleteCustomGroup = () => {
+    if (!editablePaletteGroup) return;
+    setCustomPaletteGroups((prev) => prev.filter((g) => g.id !== editablePaletteGroup.id));
+    if (activeGroupName === editablePaletteGroup.name) setActiveGroupName('');
+    setPaletteEditGroupId('');
+    setStatusText('已刪除自訂群組。');
+  };
+
+  const addColorToCustomGroup = () => {
+    if (!editablePaletteGroup) return;
+    const name = paletteNewColorName.trim();
+    const hex = normalizeColorHex(paletteNewColorHex);
+    if (!name) {
+      setStatusText('請輸入色號名稱。');
+      return;
+    }
+    if (!/^#[0-9A-F]{6}$/.test(hex)) {
+      setStatusText('色彩格式錯誤。');
+      return;
+    }
+    if (editablePaletteGroup.colors.some((c) => c.name === name)) {
+      setStatusText('色號名稱重複。');
+      return;
+    }
+    setCustomPaletteGroups((prev) =>
+      prev.map((g) => (g.id === editablePaletteGroup.id ? { ...g, colors: [...g.colors, { name, hex }] } : g))
+    );
+    setPaletteNewColorName('');
+    setPaletteNewColorHex('#ffffff');
+    setStatusText(`已新增色號 ${name}。`);
+  };
+
+  const updateColorInCustomGroup = (colorIndex: number, next: Partial<CustomPaletteColor>) => {
+    if (!editablePaletteGroup) return;
+    setCustomPaletteGroups((prev) =>
+      prev.map((g) => {
+        if (g.id !== editablePaletteGroup.id) return g;
+        const colors = [...g.colors];
+        const cur = colors[colorIndex];
+        if (!cur) return g;
+        colors[colorIndex] = {
+          name: next.name != null ? next.name : cur.name,
+          hex: next.hex != null ? normalizeColorHex(next.hex) : cur.hex
+        };
+        return { ...g, colors };
+      })
+    );
+  };
+
+  const removeColorFromCustomGroup = (colorIndex: number) => {
+    if (!editablePaletteGroup) return;
+    setCustomPaletteGroups((prev) =>
+      prev.map((g) => (g.id === editablePaletteGroup.id ? { ...g, colors: g.colors.filter((_, i) => i !== colorIndex) } : g))
+    );
+  };
+
+  const applyCustomEditHex = () => {
+    if (customEditColorIndex == null) return;
+    const hex = normalizeColorHex(customEditColorHex);
+    updateColorInCustomGroup(customEditColorIndex, { hex });
+    setCustomEditColorHex(hex.toLowerCase());
+  };
+
+  const setCustomEditRgbChannel = (channel: 0 | 1 | 2, value: string) => {
+    const v = clampByte(Number(value));
+    const next: [number, number, number] = [...customEditRgb] as [number, number, number];
+    next[channel] = v;
+    setCustomEditColorHex(rgbToHex(next[0], next[1], next[2]).toLowerCase());
+  };
+
+  const exportCustomPaletteJson = () => {
+    if (!proMode) return;
+    const payload = {
+      version: 1,
+      groups: customPaletteGroups
+    };
+    downloadBlob('pixchi-custom-palette.json', JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
+    setStatusText('自訂色庫已匯出。');
+  };
+
+  const importCustomPaletteJson = async (file: File | null) => {
+    if (!proMode || !file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as { groups?: Array<{ id?: string; name?: string; colors?: Array<{ name?: string; hex?: string }> }> };
+      const next: CustomPaletteGroup[] = [];
+      for (const g of parsed.groups ?? []) {
+        const name = String(g.name ?? '').trim();
+        if (!name) continue;
+        const colors: CustomPaletteColor[] = [];
+        for (const c of g.colors ?? []) {
+          const cn = String(c.name ?? '').trim();
+          const ch = String(c.hex ?? '').trim().toUpperCase();
+          if (!cn || !/^#[0-9A-F]{6}$/.test(ch)) continue;
+          colors.push({ name: cn, hex: ch });
+        }
+        next.push({
+          id: String(g.id ?? '').trim() || makeCustomPaletteId(),
+          name,
+          colors
+        });
+      }
+      setCustomPaletteGroups(next);
+      setPaletteEditGroupId(next[0]?.id ?? '');
+      setStatusText('已匯入自訂色庫。');
+    } catch (err) {
+      setStatusText(`自訂色庫匯入失敗：${(err as Error).message}`);
+    }
+  };
+
+  const canvasCursor = cropToolEnabled && imageBitmap
     ? cursorByCropMode(isCropDraggingRef.current ? cropDragModeRef.current : cropHoverMode)
     : undefined;
 
@@ -1273,36 +2883,274 @@ export default function App() {
           <p className="subtitle">拼豆格線圖轉換 MVP</p>
         </div>
         <div className="top-actions">
-          <button className="ghost" onClick={() => void loadPalette()}>
-            重新載入色庫
+          <button className="ghost" onClick={() => navigatePage(page === 'palette' ? 'main' : 'palette')}>
+            {page === 'palette' ? '返回轉換頁' : '前往色庫管理'}
           </button>
-          <button onClick={exportCsv} disabled={isPdfBusy}>
-            匯出 Material CSV
-          </button>
-          {proMode && (
+          {page === 'main' && (
             <>
-              <input
-                ref={pdfImportRef}
-                type="file"
-                accept="application/pdf"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const file = e.target.files?.[0] ?? null;
-                  void importPdfRestore(file);
-                }}
-              />
-              <button className="ghost" onClick={() => pdfImportRef.current?.click()} disabled={isPdfBusy}>
-                匯入 PDF 還原
+              {proMode && (
+                <button className="ghost" onClick={() => void loadPalette()}>
+                  重新載入色庫
+                </button>
+              )}
+              <button onClick={exportCsv} disabled={isPdfBusy}>
+                匯出 Material CSV
+              </button>
+              {proMode && (
+                <>
+                  <input
+                    ref={pdfImportRef}
+                    type="file"
+                    accept="application/pdf"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] ?? null;
+                      void importPdfRestore(file);
+                    }}
+                  />
+                  <button className="ghost" onClick={() => pdfImportRef.current?.click()} disabled={isPdfBusy}>
+                    匯入 PDF 還原
+                  </button>
+                </>
+              )}
+              <button className="primary" onClick={() => void exportPdfLike()} disabled={isPdfBusy}>
+                {isPdfBusy ? '處理中...' : '匯出 Pattern PDF'}
               </button>
             </>
           )}
-          <button className="primary" onClick={() => void exportPdfLike()} disabled={isPdfBusy}>
-            {isPdfBusy ? '處理中...' : '匯出 Pattern PDF'}
-          </button>
         </div>
       </header>
-
-      <main className="layout">
+      {page === 'palette' ? (
+        <main className="layout palette-layout">
+          <section className="panel controls">
+            <h2>色庫管理</h2>
+            <p className="hint">可複製現有群組建立自訂色庫，並編輯色號。一般版不提供匯入/匯出。</p>
+            <div className="row two">
+              <button type="button" className={paletteTab === 'builtin' ? 'primary' : 'ghost'} onClick={() => setPaletteTab('builtin')}>
+                原有色庫
+              </button>
+              <button type="button" className={paletteTab === 'custom' ? 'primary' : 'ghost'} onClick={() => setPaletteTab('custom')}>
+                自訂色庫
+              </button>
+            </div>
+            {paletteTab === 'builtin' ? (
+              <>
+                <p className="hint">請在右側卡片點選要預覽的群組，進入後可複製到自訂色庫。</p>
+                <label>
+                  新群組名稱（可選）
+                  <input type="text" value={paletteNewGroupName} onChange={(e) => setPaletteNewGroupName(e.target.value)} placeholder="留空會自動命名" />
+                </label>
+              </>
+            ) : (
+              <>
+                <div className="row one">
+                  <button type="button" className="ghost" onClick={() => createCustomGroup(null)}>
+                    新建空白色庫
+                  </button>
+                </div>
+                <p className="hint">請在右側卡片點選要編輯的自訂群組，進入後可直接點色票改色。</p>
+                {editablePaletteGroup && (
+                  <>
+                    <div className="row three">
+                      <input type="text" value={paletteNewGroupName} onChange={(e) => setPaletteNewGroupName(e.target.value)} />
+                      <button type="button" className="ghost" onClick={updateCustomGroupName}>更新群組名</button>
+                      <button type="button" className="ghost" onClick={deleteCustomGroup}>刪除群組</button>
+                    </div>
+                    <div className="row three">
+                      <input type="text" placeholder="色號名稱" value={paletteNewColorName} onChange={(e) => setPaletteNewColorName(e.target.value)} />
+                      <input type="color" value={normalizeColorHex(paletteNewColorHex).toLowerCase()} onChange={(e) => setPaletteNewColorHex(e.target.value)} />
+                      <button type="button" className="ghost" onClick={addColorToCustomGroup}>新增色號</button>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+            {proMode && (
+              <div className="row two">
+                <button type="button" className="ghost" onClick={exportCustomPaletteJson}>
+                  匯出自訂色庫
+                </button>
+                <label>
+                  匯入自訂色庫
+                  <input
+                    type="file"
+                    accept="application/json"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] ?? null;
+                      void importCustomPaletteJson(file);
+                      e.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+            )}
+            <p className="status">{statusText}</p>
+          </section>
+          <section className="panel stats">
+            <h2>{paletteTab === 'builtin' ? '原有色庫總覽' : '自訂色號明細'}</h2>
+            {paletteTab === 'builtin' ? (
+              <div className="palette-library">
+                <div className="palette-group-grid">
+                  {builtinGroups.map((g) => (
+                    <button
+                      type="button"
+                      key={`builtin-card-${g.name}`}
+                      className={`palette-group-card ${builtinPreviewGroupName === g.name ? 'active' : ''}`.trim()}
+                      onClick={() => setBuiltinPreviewGroupName(g.name)}
+                    >
+                      <div className="palette-group-cover">
+                        {(g.colors.length ? g.colors : [{ name: '-', hex: '#FFFFFF', rgb: [255, 255, 255] as [number, number, number], lab: [100, 0, 0] as [number, number, number] }])
+                          .slice(0, 36)
+                          .map((c) => (
+                            <span key={`${g.name}-${c.name}`} style={{ background: c.hex }} />
+                          ))}
+                      </div>
+                      <div className="palette-group-meta">
+                        <strong>{g.name}</strong>
+                        <small>{g.colors.length} 色</small>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                {builtinPreviewGroup && (
+                  <div className="palette-preview">
+                    <div className="palette-preview-head">
+                      <h3>{builtinPreviewGroup.name} 色號預覽（{builtinPreviewGroup.colors.length}）</h3>
+                      <button type="button" className="primary" onClick={() => createCustomGroup(builtinPreviewGroup)}>
+                        複製到自訂
+                      </button>
+                    </div>
+                    <div className="palette-color-grid">
+                      {builtinPreviewGroup.colors.map((c) => (
+                        <div key={`${builtinPreviewGroup.name}-${c.name}`} className="palette-color-tile">
+                          <span className="color-pill tiny" style={{ color: c.hex }} />
+                          <strong>{c.name}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : customPaletteGroups.length ? (
+              <div className="palette-library">
+                <div className="palette-group-grid">
+                  {customPaletteGroups.map((g) => (
+                    <button
+                      type="button"
+                      key={`custom-card-${g.id}`}
+                      className={`palette-group-card ${paletteEditGroupId === g.id ? 'active' : ''}`.trim()}
+                      onClick={() => setPaletteEditGroupId(g.id)}
+                    >
+                      <div className="palette-group-cover">
+                        {(g.colors.length ? g.colors : [{ name: '-', hex: '#FFFFFF' }])
+                          .slice(0, 36)
+                          .map((c) => (
+                            <span key={`${g.id}-${c.name}`} style={{ background: c.hex }} />
+                          ))}
+                      </div>
+                      <div className="palette-group-meta">
+                        <strong>{g.name}</strong>
+                        <small>{g.colors.length} 色</small>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                {editablePaletteGroup && (
+                  <div className="palette-preview">
+                    <div className="palette-preview-head">
+                      <h3>{editablePaletteGroup.name} 色號預覽（{editablePaletteGroup.colors.length}）</h3>
+                    </div>
+                    <div className="palette-color-grid">
+                      {editablePaletteGroup.colors.map((c, idx) => (
+                        <div key={`${editablePaletteGroup.id}-${idx}`} className="palette-color-edit-cell">
+                          <button
+                            type="button"
+                            className={`palette-color-tile editable ${customEditColorIndex === idx ? 'active' : ''}`.trim()}
+                            onClick={() => {
+                              if (customEditColorIndex === idx) {
+                                setCustomEditColorIndex(null);
+                                return;
+                              }
+                              setCustomEditColorIndex(idx);
+                              setCustomEditColorHex(normalizeColorHex(c.hex).toLowerCase());
+                            }}
+                          >
+                            <span className="color-pill tiny" style={{ color: c.hex }} />
+                            <strong>{c.name}</strong>
+                          </button>
+                          {customEditColorIndex === idx && (
+                            <div className="palette-color-popover" onClick={(e) => e.stopPropagation()}>
+                              <div className="palette-color-popover-head">
+                                <strong>{c.name}</strong>
+                                <button type="button" className="ghost" onClick={() => setCustomEditColorIndex(null)}>
+                                  關閉
+                                </button>
+                              </div>
+                              <input
+                                type="color"
+                                value={normalizeColorHex(customEditColorHex).toLowerCase()}
+                                onChange={(e) => setCustomEditColorHex(e.target.value)}
+                                aria-label="選擇顏色"
+                              />
+                              <div className="row two">
+                                <input
+                                  type="text"
+                                  value={customEditColorHex.toUpperCase()}
+                                  onChange={(e) => setCustomEditColorHex(e.target.value)}
+                                  onBlur={applyCustomEditHex}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') applyCustomEditHex();
+                                  }}
+                                  placeholder="#RRGGBB"
+                                />
+                                <button type="button" className="primary" onClick={applyCustomEditHex}>
+                                  套用
+                                </button>
+                              </div>
+                              <div className="row three">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={255}
+                                  value={customEditRgb[0]}
+                                  onChange={(e) => setCustomEditRgbChannel(0, e.target.value)}
+                                  onBlur={applyCustomEditHex}
+                                  aria-label="R"
+                                />
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={255}
+                                  value={customEditRgb[1]}
+                                  onChange={(e) => setCustomEditRgbChannel(1, e.target.value)}
+                                  onBlur={applyCustomEditHex}
+                                  aria-label="G"
+                                />
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={255}
+                                  value={customEditRgb[2]}
+                                  onChange={(e) => setCustomEditRgbChannel(2, e.target.value)}
+                                  onBlur={applyCustomEditHex}
+                                  aria-label="B"
+                                />
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="hint">請先建立或選擇一個自訂群組。</p>
+            )}
+          </section>
+        </main>
+      ) : (
+      <main className={`layout ${isCanvasFullscreen ? 'canvas-fullscreen' : ''}`.trim()}>
         <section className="panel controls">
           <h2>轉換設定</h2>
 
@@ -1310,6 +3158,136 @@ export default function App() {
             專案名稱
             <input type="text" value={projectName} onChange={(e) => setProjectName(e.target.value)} />
           </label>
+
+          <div className="draft-box">
+            <div className="draft-box-head">
+              <strong>本地草稿（未登入上限 {getDraftLimit()}）</strong>
+              <span>{lastSavedAt ? `最後儲存：${formatLocalTime(lastSavedAt)}` : '尚未儲存'} | 佔用：{storageEstimateText}</span>
+            </div>
+            <label>
+              草稿清單
+              <select
+                value={activeDraftId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  if (!id) {
+                    setActiveDraftId('');
+                    setActiveDraftVersionId('');
+                    return;
+                  }
+                  setActiveDraftId(id);
+                  setActiveDraftVersionId('');
+                  void loadDraftById(id);
+                }}
+              >
+                <option value="">未選擇草稿</option>
+                {drafts.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}（{formatLocalTime(d.updatedAt)}）
+                  </option>
+                ))}
+              </select>
+            </label>
+            {proMode && (
+              <>
+                <div className="row two">
+                  <label>
+                    草稿名稱
+                    <input type="text" value={draftRenameInput} onChange={(e) => setDraftRenameInput(e.target.value)} disabled={!activeDraftId} />
+                  </label>
+                  <button type="button" className="ghost" onClick={() => void saveDraftRename()} disabled={isDraftBusy || !activeDraftId}>
+                    更新名稱
+                  </button>
+                </div>
+                <label>
+                  復原點版本
+                  <select
+                    value={activeDraftVersionId}
+                    onChange={(e) => {
+                      const versionId = e.target.value;
+                      setActiveDraftVersionId(versionId);
+                      if (!activeDraftId) return;
+                      void loadDraftById(activeDraftId, versionId || undefined);
+                    }}
+                    disabled={!activeDraftId}
+                  >
+                    <option value="">最新版本</option>
+                    {(activeDraft?.versions ?? []).map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {formatLocalTime(v.at)}（{v.reason === 'manual' ? '手動' : '自動'}）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="row two">
+                  <label>
+                    版本備註
+                    <input
+                      type="text"
+                      value={draftVersionNoteInput}
+                      onChange={(e) => setDraftVersionNoteInput(e.target.value)}
+                      placeholder="例如：完成頭髮修色"
+                      disabled={!activeDraftVersionId}
+                    />
+                  </label>
+                  <button type="button" className="ghost" onClick={() => void saveVersionNote()} disabled={isDraftBusy || !activeDraftVersionId}>
+                    儲存備註
+                  </button>
+                </div>
+                <div className="row two">
+                  <label>
+                    比較版本 A
+                    <select value={compareVersionA} onChange={(e) => setCompareVersionA(e.target.value)} disabled={!activeDraftId}>
+                      <option value="">請選擇</option>
+                      {(activeDraft?.versions ?? []).map((v) => (
+                        <option key={`a-${v.id}`} value={v.id}>
+                          {formatLocalTime(v.at)}（{v.reason === 'manual' ? '手動' : '自動'}）
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    比較版本 B
+                    <select value={compareVersionB} onChange={(e) => setCompareVersionB(e.target.value)} disabled={!activeDraftId}>
+                      <option value="">請選擇</option>
+                      {(activeDraft?.versions ?? []).map((v) => (
+                        <option key={`b-${v.id}`} value={v.id}>
+                          {formatLocalTime(v.at)}（{v.reason === 'manual' ? '手動' : '自動'}）
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="row one">
+                  <button type="button" className="ghost" onClick={() => void compareDraftVersions()} disabled={isDraftBusy || !activeDraftId}>
+                    比較版本差異
+                  </button>
+                  {compareSummary && <div className="hint">{compareSummary}</div>}
+                </div>
+              </>
+            )}
+            <div className="row two">
+              <button type="button" className="ghost" onClick={() => void saveDraft({ asNew: true, reason: 'manual' })} disabled={isDraftBusy}>
+                新增草稿
+              </button>
+              <button type="button" className="ghost" onClick={() => void saveDraft({ reason: 'manual' })} disabled={isDraftBusy || !activeDraftId}>
+                手動存檔
+              </button>
+            </div>
+            <div className="row one">
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  if (!activeDraftId) return;
+                  void removeDraftById(activeDraftId);
+                }}
+                disabled={isDraftBusy || !activeDraftId}
+              >
+                刪除目前草稿
+              </button>
+            </div>
+          </div>
 
           <label>
             作用群組
@@ -1388,12 +3366,19 @@ export default function App() {
           </label>
 
           <label>
-            比對策略
-            <select value={strategy} onChange={(e) => setStrategy(e.target.value as MatchStrategy)}>
-              <option value="lab_nearest">lab_nearest（DeltaE2000）</option>
-              <option value="rgb_nearest">rgb_nearest</option>
-            </select>
+            轉換前併色門檻 DeltaE
+            <input
+              type="number"
+              min={0}
+              max={PRE_MERGE_DELTAE_MAX}
+              step={0.5}
+              value={preMergeDeltaE}
+              onChange={(e) => setPreMergeDeltaE(Math.max(0, Math.min(PRE_MERGE_DELTAE_MAX, Number(e.target.value) || 0)))}
+            />
           </label>
+          <div className="hint">
+            0 表示關閉；數值越高，越多相近色會在轉換時直接合併成同色（固定使用 lab_nearest / DeltaE2000）。
+          </div>
 
           <label className="switch-row">
             顯示色號文字
@@ -1407,6 +3392,177 @@ export default function App() {
               <option value={3}>3x（最清晰）</option>
             </select>
           </label>
+          {proMode && pdfPagination && (
+            <div className="pdf-nav-box">
+              <strong>多頁輸出導覽</strong>
+              <div className="hint">
+                {pdfPagination.totalTiles > 1
+                  ? `共 ${pdfPagination.totalTiles} 頁（${pdfPagination.xPages} x ${pdfPagination.yPages}）`
+                  : '目前內容為單頁輸出（可直接匯出）'}
+              </div>
+              {pdfPagination.totalTiles > 1 && (
+                <>
+                  <div className="row three">
+                    <label>
+                      起始頁
+                      <input
+                        type="number"
+                        min={1}
+                        max={pdfPagination.totalTiles}
+                        value={pdfPageFrom}
+                        onChange={(e) => setPdfPageFrom(clampInt(Number(e.target.value) || 1, 1, pdfPagination.totalTiles))}
+                      />
+                    </label>
+                    <label>
+                      結束頁
+                      <input
+                        type="number"
+                        min={1}
+                        max={pdfPagination.totalTiles}
+                        value={pdfPageTo}
+                        onChange={(e) => setPdfPageTo(clampInt(Number(e.target.value) || 1, 1, pdfPagination.totalTiles))}
+                      />
+                    </label>
+                    <label>
+                      頁碼跳轉
+                      <input
+                        type="number"
+                        min={1}
+                        max={pdfPagination.totalTiles}
+                        value={pdfJumpPage}
+                        onChange={(e) => setPdfJumpPage(clampInt(Number(e.target.value) || 1, 1, pdfPagination.totalTiles))}
+                      />
+                    </label>
+                  </div>
+                  <div className="row two">
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        setPdfPageFrom(pdfJumpPage);
+                        setPdfPageTo(pdfJumpPage);
+                      }}
+                    >
+                      只匯出跳轉頁
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        setPdfPageFrom(1);
+                        setPdfPageTo(pdfPagination.totalTiles);
+                      }}
+                    >
+                      還原全範圍
+                    </button>
+                  </div>
+                  <div className="tile-thumb-list">
+                    {pdfPagination.tiles.map((tile) => {
+                      const from = Math.min(pdfPageFrom, pdfPageTo);
+                      const to = Math.max(pdfPageFrom, pdfPageTo);
+                      const inRange = tile.pageNo >= from && tile.pageNo <= to;
+                      const isJump = tile.pageNo === pdfJumpPage;
+                      return (
+                        <button
+                          key={`tile-${tile.pageNo}`}
+                          type="button"
+                          className={`tile-thumb ${inRange ? 'in-range' : ''} ${isJump ? 'is-jump' : ''}`.trim()}
+                          onClick={() => setPdfJumpPage(tile.pageNo)}
+                        >
+                          {pdfTileThumbMap.get(tile.pageNo) && (
+                            <img src={pdfTileThumbMap.get(tile.pageNo)} alt={`page-${tile.pageNo}`} className="tile-thumb-img" />
+                          )}
+                          <span>#{tile.pageNo}</span>
+                          <small>X {tile.startCol + 1}-{tile.startCol + tile.colsPart}</small>
+                          <small>Y {tile.startRow + 1}-{tile.startRow + tile.rowsPart}</small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          {largeGridMode && pdfPagination && pdfPagination.totalTiles > 1 && (
+            <div className="pdf-nav-box">
+              <strong>大圖分塊編輯</strong>
+              <div className="hint">全圖可看整體構圖；選擇分塊後可放大查看色號並編輯。</div>
+              <div className="row three">
+                <button type="button" className={largeViewTilePage === 0 ? 'primary' : 'ghost'} onClick={() => setLargeViewTilePage(0)}>
+                  全圖
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => setLargeViewTilePage(pdfJumpPage)}
+                  disabled={pdfJumpPage <= 0 || pdfJumpPage > pdfPagination.totalTiles}
+                >
+                  切到跳轉頁
+                </button>
+                <div className="hint">當前：{largeViewTilePage > 0 ? `分塊 #${largeViewTilePage}` : '全圖'}</div>
+              </div>
+              {largeViewTilePage === 0 && (
+                <div className="oversize-box">
+                  <div className="hint">目前在全圖模式，色號顯示會簡化。建議切到分塊編輯以檢視色號。</div>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      if (!pdfPagination.tiles.length) return;
+                      setLargeViewTilePage(pdfPagination.tiles[0].pageNo);
+                    }}
+                  >
+                    切到第一塊
+                  </button>
+                </div>
+              )}
+              <div className="tile-thumb-list">
+                {pdfPagination.tiles.map((tile) => {
+                  const active = largeViewTilePage === tile.pageNo;
+                  return (
+                    <button
+                      key={`edit-tile-${tile.pageNo}`}
+                      type="button"
+                      className={`tile-thumb ${active ? 'is-jump' : ''}`.trim()}
+                      onClick={() => setLargeViewTilePage(tile.pageNo)}
+                    >
+                      {pdfTileThumbMap.get(tile.pageNo) && (
+                        <img src={pdfTileThumbMap.get(tile.pageNo)} alt={`edit-page-${tile.pageNo}`} className="tile-thumb-img" />
+                      )}
+                      <span>編輯 #{tile.pageNo}</span>
+                      <small>X {tile.startCol + 1}-{tile.startCol + tile.colsPart}</small>
+                      <small>Y {tile.startRow + 1}-{tile.startRow + tile.rowsPart}</small>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div className="preflight-box">
+            <strong>輸出前檢查</strong>
+            <div className="hint">CSV 與 PDF 都會先執行一致性檢查</div>
+            <div className="preflight-grid">
+              <div>
+                <div className="hint">CSV</div>
+                {preflightCsv.map((item, idx) => (
+                  <div key={`csv-${idx}`} className={`preflight-item ${item.ok ? 'ok' : 'fail'}`}>
+                    <span>{item.ok ? 'OK' : 'NG'}</span>
+                    <small>{item.label}：{item.detail}</small>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div className="hint">PDF</div>
+                {preflightPdf.map((item, idx) => (
+                  <div key={`pdf-${idx}`} className={`preflight-item ${item.ok ? 'ok' : 'fail'}`}>
+                    <span>{item.ok ? 'OK' : 'NG'}</span>
+                    <small>{item.label}：{item.detail}</small>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
 
           {proMode && (
             <>
@@ -1439,6 +3595,57 @@ export default function App() {
               清空結果
             </button>
           </div>
+          {convertProgress.running && (
+            <div className="progress-box">
+              <div className="progress-head">
+                <strong>轉換進度</strong>
+                <span>{convertProgress.phase} {convertProgress.percent}%</span>
+              </div>
+              <div className="progress-track">
+                <div className="progress-bar" style={{ width: `${convertProgress.percent}%` }} />
+              </div>
+            </div>
+          )}
+          {oversizePlan && (
+            <div className="oversize-box">
+              <strong>大圖提示</strong>
+              <div className="hint">
+                目前格線 {oversizePlan.cols}x{oversizePlan.rows}（{oversizePlan.total.toLocaleString()} 格）超過建議上限 {GRID_SOFT_LIMIT.toLocaleString()} 格。
+              </div>
+              <div className="row two">
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    setCols(oversizePlan.suggestCols);
+                    setRows(oversizePlan.suggestRows);
+                    void runConvert({
+                      overrideCols: oversizePlan.suggestCols,
+                      overrideRows: oversizePlan.suggestRows,
+                      allowOversize: true,
+                      useLargeMode: false
+                    });
+                  }}
+                >
+                  自動縮放至 {oversizePlan.suggestCols}x{oversizePlan.suggestRows}
+                </button>
+                {proMode && (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => void runConvert({ allowOversize: true, useLargeMode: true })}
+                  >
+                    以大圖模式繼續
+                  </button>
+                )}
+              </div>
+              <div className="row one">
+                <button type="button" className="ghost" onClick={() => setOversizePlan(null)}>
+                  取消本次超限轉換
+                </button>
+              </div>
+            </div>
+          )}
 
           <hr />
 
@@ -1446,44 +3653,54 @@ export default function App() {
           <label>
             快速搜尋色號（焦點預覽）
             <div className="color-select" ref={focusColorMenuRef}>
-              <button
-                type="button"
-                className="color-select-trigger"
-                onClick={() => setFocusColorMenuOpen((v) => !v)}
-              >
-                {selectedFocusColor ? (
-                  <>
-                    <span className="color-pill tiny" style={{ color: selectedFocusColor.hex }} />
-                    <span>
-                      {selectedFocusColor.name} ({selectedFocusColor.hex})
-                    </span>
-                  </>
-                ) : (
-                  <span>請選擇要設為焦點的色號</span>
-                )}
-              </button>
+              <div className="color-select-trigger-input">
+                {selectedFocusColor && <span className="color-pill tiny" style={{ color: selectedFocusColor.hex }} />}
+                <input
+                  type="text"
+                  placeholder={constructionMode ? '施工模式下焦點由任務選取決定' : '請選擇要設為焦點的色號'}
+                  value={focusColorMenuOpen ? focusColorSearch : selectedFocusColor ? selectedFocusColor.name : ''}
+                  disabled={constructionMode}
+                  onFocus={() => {
+                    if (constructionMode) return;
+                    setFocusColorMenuOpen(true);
+                    setFocusColorSearch('');
+                  }}
+                  onChange={(e) => {
+                    if (constructionMode) return;
+                    setFocusColorSearch(e.target.value);
+                    if (!focusColorMenuOpen) setFocusColorMenuOpen(true);
+                  }}
+                  onKeyDown={(e) => {
+                    if (constructionMode) return;
+                    if (e.key !== 'Enter') return;
+                    if (!filteredFocusColors.length) return;
+                    setFocusColorName(filteredFocusColors[0].name);
+                    setFocusColorMenuOpen(false);
+                    setFocusColorSearch('');
+                  }}
+                />
+                <button
+                  type="button"
+                  className="ghost color-select-toggle"
+                  onClick={() => setFocusColorMenuOpen((v) => !v)}
+                >
+                  ▾
+                </button>
+              </div>
               {focusColorMenuOpen && (
                 <div className="color-select-menu">
-                  <div className="color-select-search-wrap">
-                    <input
-                      type="text"
-                      className="color-select-search"
-                      placeholder="搜尋已辨識焦點色號..."
-                      value={focusColorSearch}
-                      onChange={(e) => setFocusColorSearch(e.target.value)}
-                    />
-                  </div>
                   <button
                     type="button"
                     className="color-select-option clear-option"
                     onClick={() => {
-                      setFocusColorName('');
+                      if (constructionMode) clearConstructionFocus();
+                      else setFocusColorName('');
                       setFocusColorMenuOpen(false);
                     }}
                   >
                     清除焦點
                   </button>
-                  {filteredFocusColors.map((c) => (
+                  {!constructionMode && filteredFocusColors.map((c) => (
                     <button
                       key={c.name}
                       type="button"
@@ -1495,14 +3712,38 @@ export default function App() {
                     >
                       <span className="color-pill tiny" style={{ color: c.hex }} />
                       <span>
-                        {c.name} ({c.hex})
+                        {c.name}
                       </span>
                     </button>
                   ))}
+                  {constructionMode && <div className="hint" style={{ padding: '8px 10px' }}>施工模式僅可在此清除焦點。</div>}
                 </div>
               )}
             </div>
           </label>
+          <label className="switch-row">
+            焦點鄰近色模式（DeltaE）
+            <input
+              type="checkbox"
+              checked={focusNeighborEnabled}
+              disabled={constructionMode}
+              onChange={(e) => setFocusNeighborEnabled(e.target.checked)}
+            />
+          </label>
+          {focusNeighborEnabled && !constructionMode && (
+            <label>
+              鄰近色門檻 DeltaE
+              <input
+                type="number"
+                min={1}
+                max={50}
+                step={0.5}
+                value={focusNeighborDeltaE}
+                onChange={(e) => setFocusNeighborDeltaE(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+              />
+            </label>
+          )}
+          {constructionMode && <div className="hint">施工模式中，焦點色由任務選取與取色工具控制。</div>}
 
           <label>
             選擇替換色號
@@ -1512,7 +3753,7 @@ export default function App() {
                 <input
                   type="text"
                   placeholder="搜尋可替換色號..."
-                  value={editColorMenuOpen ? paletteSearch : selectedEditColor ? `${selectedEditColor.name} (${selectedEditColor.hex})` : ''}
+                  value={editColorMenuOpen ? paletteSearch : selectedEditColor ? selectedEditColor.name : ''}
                   onFocus={() => {
                     setEditColorMenuOpen(true);
                     setPaletteSearch('');
@@ -1572,7 +3813,7 @@ export default function App() {
                     >
                       <span className="color-pill tiny" style={{ color: c.hex }} />
                       <span>
-                        {c.name} ({c.hex})
+                        {c.name}
                       </span>
                     </button>
                   ))}
@@ -1581,7 +3822,7 @@ export default function App() {
             </div>
           </label>
 
-          <div className="row three">
+          <div className="row five">
             <button
               className={editTool === 'pan' ? 'primary active-tool' : 'ghost'}
               onClick={() => setEditTool('pan')}
@@ -1603,9 +3844,62 @@ export default function App() {
             >
               橡皮擦
             </button>
+            <button
+              className={editTool === 'bucket' ? 'primary active-tool' : 'ghost'}
+              onClick={() => setEditTool('bucket')}
+              type="button"
+            >
+              油漆桶
+            </button>
+            <button
+              className={editTool === 'picker' ? 'primary active-tool' : 'ghost'}
+              onClick={() => setEditTool('picker')}
+              type="button"
+            >
+              取色
+            </button>
           </div>
 
-          <div className="row three">
+          {largeGridMode && (
+            <label>
+              大圖操作範圍（油漆桶、焦點全替換、外框）
+              <select value={largeOperationScope} onChange={(e) => setLargeOperationScope(e.target.value as 'tile' | 'all')}>
+                <option value="tile">當前分塊</option>
+                <option value="all">全圖</option>
+              </select>
+            </label>
+          )}
+
+          {(editTool === 'paint' || editTool === 'erase') && (
+            <div className="row two">
+              <label>
+                筆刷尺寸
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  step={1}
+                  value={brushSize}
+                  onChange={(e) => setBrushSize(Math.max(1, Math.min(100, Math.floor(Number(e.target.value) || 1))))}
+                />
+              </label>
+                <label>
+                  快捷鍵
+                  <input value={`${effectiveShortcutConfig.brushDown.join('/')} / ${effectiveShortcutConfig.brushUp.join('/')} 調整 (${brushSize}x${brushSize})`} readOnly />
+                </label>
+              </div>
+          )}
+          {editTool === 'bucket' && (
+            <label>
+              油漆桶模式
+              <select value={bucketMode} onChange={(e) => setBucketMode(e.target.value as 'global' | 'region')}>
+                <option value="global">全圖同色替換</option>
+                <option value="region">連通區替換</option>
+              </select>
+            </label>
+          )}
+
+          <div className="row four">
             <button className="ghost" onClick={undo}>
               Undo
             </button>
@@ -1615,6 +3909,204 @@ export default function App() {
             <button className="ghost" onClick={replaceAllSameColor}>
               焦點色全替換
             </button>
+            <button className="ghost" onClick={addOneCellOutline}>
+              加外框(1格)
+            </button>
+          </div>
+
+          {converted && (
+            <div className="construction-box">
+              <div className="draft-box-head">
+                <strong>拼豆順序模式</strong>
+                <span>完成：{constructionCompletionText}</span>
+              </div>
+              <div className="construction-section">
+                <label className="switch-row">
+                  1. 啟用施工順序
+                  <input type="checkbox" checked={constructionMode} onChange={(e) => setConstructionMode(e.target.checked)} />
+                </label>
+              </div>
+              <div className="construction-section">
+                <div className="row two">
+                  <label>
+                    2. 任務分組
+                    <select value={constructionStrategy} onChange={(e) => setConstructionStrategy(e.target.value as 'block' | 'color')}>
+                      <option value="block">區塊優先</option>
+                      <option value="color">顏色優先</option>
+                    </select>
+                  </label>
+                  <label>
+                    排列規則
+                    <select
+                      value={constructionOrderRule}
+                      onChange={(e) => {
+                        const next = e.target.value as ConstructionOrderRule;
+                        setConstructionOrderRule(next);
+                        if (next !== 'manual') setConstructionCustomOrder([]);
+                      }}
+                    >
+                      <option value="count_desc">顆數多到少</option>
+                      <option value="count_asc">顆數少到多</option>
+                      <option value="title_asc">名稱 A-Z</option>
+                      <option value="title_desc">名稱 Z-A</option>
+                      {proMode && <option value="manual">手動拖曳</option>}
+                    </select>
+                  </label>
+                </div>
+                <label className="switch-row">
+                  已完成覆蓋色
+                  <input
+                    type="checkbox"
+                    checked={constructionShowDoneOverlay}
+                    onChange={(e) => setConstructionShowDoneOverlay(e.target.checked)}
+                  />
+                </label>
+              </div>
+              {proMode && constructionOrderRule === 'manual' && constructionRuleInference && (
+                <div className="construction-section">
+                  <div className="construction-inline-tip">
+                    <span className="hint">
+                      建議：{formatConstructionRuleLabel(constructionRuleInference.bestRule)}（{(constructionRuleInference.bestScore * 100).toFixed(1)}%）
+                    </span>
+                    <button type="button" className="ghost construction-mini-btn" onClick={applyInferredConstructionRule}>
+                      套用建議
+                    </button>
+                  </div>
+                </div>
+              )}
+              {proMode && (
+                <div className="construction-section">
+                  <div className="row three">
+                    <label>
+                      3. 模板
+                      <select value={constructionTemplateId} onChange={(e) => setConstructionTemplateId(e.target.value)}>
+                        <option value="">選擇模板</option>
+                        {constructionTemplates.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}（{t.strategy === 'block' ? '區塊' : '顏色'} / {t.inferredFromManual ? '手動色序' : formatConstructionRuleLabel(t.rule)}）
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button type="button" className="primary" onClick={applyConstructionTemplate} disabled={!constructionTemplateId}>
+                      套用
+                    </button>
+                    <button type="button" className="ghost" onClick={deleteConstructionTemplate} disabled={!constructionTemplateId}>
+                      刪除
+                    </button>
+                  </div>
+                  <div className="row two">
+                    <input
+                      type="text"
+                      value={constructionTemplateName}
+                      onChange={(e) => setConstructionTemplateName(e.target.value)}
+                      placeholder="儲存目前排序為新模板"
+                    />
+                    <button type="button" className="ghost" onClick={saveConstructionTemplate}>
+                      儲存目前排序
+                    </button>
+                  </div>
+                  <div className="hint">手動拖曳時儲存模板，會自動辨識色序並可跨作品套用。</div>
+                </div>
+              )}
+              <div className="construction-task-list" ref={constructionListRef}>
+                {constructionTasks.length === 0 && <div className="hint">尚無可排序的內容。</div>}
+                {constructionTasks.map((task, idx) => {
+                  const done = !!constructionDoneMap[task.id];
+                  const active = constructionCurrentTask?.id === task.id;
+                  return (
+                    <div
+                      key={task.id}
+                      ref={(el) => {
+                        constructionItemRefs.current[task.id] = el;
+                      }}
+                      className={`construction-task-item ${active ? 'active' : ''} ${done ? 'done' : ''}`.trim()}
+                      draggable={proMode && constructionOrderRule === 'manual'}
+                      onDragStart={() => setConstructionDragTaskId(task.id)}
+                      onDragOver={(e) => {
+                        if (!proMode || constructionOrderRule !== 'manual') return;
+                        e.preventDefault();
+                      }}
+                      onDrop={(e) => {
+                        if (!proMode || constructionOrderRule !== 'manual') return;
+                        e.preventDefault();
+                        reorderConstructionTask(constructionDragTaskId, task.id);
+                        setConstructionDragTaskId('');
+                      }}
+                      onClick={() => setFocusFromTask(task.id)}
+                    >
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={done}
+                          onChange={(e) => toggleConstructionDone(task.id, e.target.checked)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <span>
+                          #{idx + 1} {task.title}（{task.count}）
+                        </span>
+                      </label>
+                      <small>{task.subtitle}</small>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {proMode && (
+            <div className="shortcut-box">
+              <div className="draft-box-head">
+                <strong>快捷鍵設定（逗號分隔）</strong>
+                <button type="button" className="ghost" onClick={resetShortcutDefaults}>
+                  還原預設
+                </button>
+              </div>
+              {Object.keys(SHORTCUTS).map((key) => {
+                const k = key as keyof typeof SHORTCUTS;
+                return (
+                  <label key={`shortcut-${k}`}>
+                    {SHORTCUT_LABELS[k]}
+                    <input
+                      type="text"
+                      value={(shortcutConfig[k] ?? []).join(', ')}
+                      onChange={(e) => updateShortcutByText(k, e.target.value)}
+                      placeholder={SHORTCUTS[k].join(', ')}
+                    />
+                  </label>
+                );
+              })}
+              {shortcutConflicts.length > 0 && (
+                <div className="shortcut-conflict">
+                  <strong>快捷鍵衝突</strong>
+                  {shortcutConflicts.map((c) => (
+                    <div key={`conflict-${c.hotkey}`} className="history-item">
+                      {c.hotkey}：{c.actions.map((a) => SHORTCUT_LABELS[a]).join(' / ')}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="history-box">
+            <strong>最近操作</strong>
+            {undoStack.length ? (
+              [...undoStack]
+                .slice(-6)
+                .reverse()
+                .map((batch, i) => {
+                  const remaining = undoStack.length - (i + 1);
+                  return (
+                    <button key={`${batch.label}-${i}`} type="button" className="history-item history-jump" onClick={() => rollbackToStep(remaining)}>
+                      {batch.label}
+                    </button>
+                  );
+                })
+            ) : (
+              <div className="history-item">尚無操作</div>
+            )}
+            {historyItems.length > 0 && <div className="history-item">最新：{historyItems[0]}</div>}
           </div>
 
           <p className="status">{statusText}</p>
@@ -1627,6 +4119,9 @@ export default function App() {
             <div className="canvas-meta-right">
               <span>{imageMeta}</span>
               <div className="zoom-tools">
+                <button type="button" className="ghost" onClick={() => setIsCanvasFullscreen((v) => !v)}>
+                  {isCanvasFullscreen ? '退出畫布' : '畫布全螢幕'}
+                </button>
                 <button type="button" className="ghost" onClick={() => setZoom((v) => Math.max(0.25, Number((v - 0.1).toFixed(2))))}>
                   -
                 </button>
@@ -1655,7 +4150,19 @@ export default function App() {
           <div className="canvas-wrap" ref={canvasWrapRef}>
             <canvas
               ref={canvasRef}
-              className={!converted ? (cropToolEnabled ? 'tool-crop' : 'tool-pan') : editTool === 'pan' ? 'tool-pan' : editTool === 'erase' ? 'tool-erase' : 'tool-paint'}
+              className={
+                cropToolEnabled && imageBitmap
+                  ? 'tool-crop'
+                  : !converted
+                  ? 'tool-pan'
+                  : editTool === 'pan'
+                  ? 'tool-pan'
+                  : editTool === 'erase'
+                  ? 'tool-erase'
+                  : editTool === 'picker'
+                  ? 'tool-picker'
+                  : 'tool-paint'
+              }
               style={canvasCursor ? { cursor: canvasCursor } : undefined}
               width={960}
               height={960}
@@ -1671,6 +4178,12 @@ export default function App() {
               ? '手型可拖曳視圖，滾輪或右上按鈕可縮放；上色與橡皮擦可編輯格子。若要再裁切，先開啟左側裁切工具。'
               : '上傳後會先顯示原圖；裁切工具支援角/邊微調與框內移動（1px）。Shift 鎖比例、Alt 由中心縮放、Esc 取消本次拖曳。'}
           </p>
+          {largeGridMode && (
+            <p className="hint">
+              大圖檢視：{largeViewTilePage > 0 ? `分塊 #${largeViewTilePage}` : '全圖'}；替換/油漆桶全圖同色可套用「當前分塊 / 全圖」範圍。
+            </p>
+          )}
+          {largeGridMode && <p className="hint">已啟用大圖模式：為了流暢度，畫布會簡化格線與色號文字顯示。</p>}
           {proMode && <p className="hint">Pro 模式已啟用：可使用尺規與參考線（並會套用到 PDF 匯出）。</p>}
         </section>
 
@@ -1771,7 +4284,7 @@ export default function App() {
           {converted && (
             <div className="quote-box">
               <span>建議報價</span>
-              <strong>{quotePrice.toFixed(2)}</strong>
+              <strong>{quotePrice}</strong>
             </div>
           )}
 
@@ -1790,7 +4303,6 @@ export default function App() {
               <thead>
                 <tr>
                   <th>色號</th>
-                  <th>Hex</th>
                   <th>顆數</th>
                   <th>佔比</th>
                   <th>成本</th>
@@ -1803,10 +4315,6 @@ export default function App() {
                       <span className="color-pill" style={{ color: r.hex }} />
                       {r.name}
                     </td>
-                    <td>
-                      <span className="color-pill" style={{ color: r.hex }} />
-                      {r.hex}
-                    </td>
                     <td>{r.count}</td>
                     <td>{r.ratio.toFixed(2)}%</td>
                     <td>{r.lineCost.toFixed(2)}</td>
@@ -1817,6 +4325,7 @@ export default function App() {
           </div>
         </section>
       </main>
+      )}
     </>
   );
 }
@@ -1826,8 +4335,133 @@ function clampInt(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
+function buildConstructionTasks(converted: Converted, strategy: 'block' | 'color'): ConstructionTask[] {
+  if (!converted.cells.length) return [];
+  if (strategy === 'color') {
+    const map = new Map<string, number[]>();
+    for (let i = 0; i < converted.cells.length; i++) {
+      const c = converted.cells[i];
+      if (!c || c.isEmpty) continue;
+      const arr = map.get(c.colorName) ?? [];
+      arr.push(i);
+      map.set(c.colorName, arr);
+    }
+    return Array.from(map.entries())
+      .map(([name, indices]) => ({
+        id: `color:${name}`,
+        title: name,
+        subtitle: '同色集中施工',
+        count: indices.length,
+        cellIndices: indices
+      }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  const blockSize = Math.max(8, Math.min(24, Math.floor(Math.max(converted.cols, converted.rows) / 8)));
+  const out: ConstructionTask[] = [];
+  let seq = 1;
+  for (let by = 0; by < converted.rows; by += blockSize) {
+    for (let bx = 0; bx < converted.cols; bx += blockSize) {
+      const indices: number[] = [];
+      const endX = Math.min(converted.cols, bx + blockSize);
+      const endY = Math.min(converted.rows, by + blockSize);
+      for (let y = by; y < endY; y++) {
+        for (let x = bx; x < endX; x++) {
+          const idx = y * converted.cols + x;
+          const c = converted.cells[idx];
+          if (!c || c.isEmpty) continue;
+          indices.push(idx);
+        }
+      }
+      if (!indices.length) continue;
+      out.push({
+        id: `block:${Math.floor(bx / blockSize)}:${Math.floor(by / blockSize)}`,
+        title: `區塊 ${seq}`,
+        subtitle: `x${bx + 1}-${endX} / y${by + 1}-${endY}`,
+        count: indices.length,
+        cellIndices: indices
+      });
+      seq += 1;
+    }
+  }
+  return out;
+}
+
+function sortConstructionTasksByRule(tasks: ConstructionTask[], rule: Exclude<ConstructionOrderRule, 'manual'> | ConstructionOrderRule) {
+  const out = [...tasks];
+  if (rule === 'count_asc') return out.sort((a, b) => a.count - b.count || a.title.localeCompare(b.title));
+  if (rule === 'title_asc') return out.sort((a, b) => a.title.localeCompare(b.title));
+  if (rule === 'title_desc') return out.sort((a, b) => b.title.localeCompare(a.title));
+  return out.sort((a, b) => b.count - a.count || a.title.localeCompare(b.title));
+}
+
+function orderTaskIdsByColorPriority(tasks: ConstructionTask[], colorPriority: string[]) {
+  const byTitle = new Map(tasks.map((t) => [t.title, t.id]));
+  const used = new Set<string>();
+  const ids: string[] = [];
+  for (const colorName of colorPriority) {
+    const id = byTitle.get(colorName);
+    if (!id || used.has(id)) continue;
+    ids.push(id);
+    used.add(id);
+  }
+  const remaining = [...tasks]
+    .filter((t) => !used.has(t.id))
+    .sort((a, b) => b.count - a.count || a.title.localeCompare(b.title))
+    .map((t) => t.id);
+  return [...ids, ...remaining];
+}
+
+function calcOrderSimilarity(orderA: string[], orderB: string[]) {
+  const n = Math.min(orderA.length, orderB.length);
+  if (n <= 1) return 1;
+  const rankB = new Map<string, number>();
+  for (let i = 0; i < orderB.length; i++) rankB.set(orderB[i], i);
+  let agree = 0;
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const ai = orderA[i];
+    const ri = rankB.get(ai);
+    if (ri == null) continue;
+    for (let j = i + 1; j < n; j++) {
+      const aj = orderA[j];
+      const rj = rankB.get(aj);
+      if (rj == null) continue;
+      total += 1;
+      if (ri < rj) agree += 1;
+    }
+  }
+  if (!total) return 1;
+  return agree / total;
+}
+
+function formatConstructionRuleLabel(rule: Exclude<ConstructionOrderRule, 'manual'>) {
+  if (rule === 'count_asc') return '顆數少到多';
+  if (rule === 'title_asc') return '名稱A-Z';
+  if (rule === 'title_desc') return '名稱Z-A';
+  return '顆數多到少';
+}
+
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value));
+}
+
+function fitGridWithinLimit(cols: number, rows: number, limit: number) {
+  const total = cols * rows;
+  if (total <= limit) return { cols, rows };
+  const factor = Math.sqrt(limit / total);
+  let nextCols = Math.max(1, Math.floor(cols * factor));
+  let nextRows = Math.max(1, Math.floor(rows * factor));
+  while (nextCols * nextRows > limit) {
+    if (nextCols >= nextRows && nextCols > 1) nextCols -= 1;
+    else if (nextRows > 1) nextRows -= 1;
+    else break;
+  }
+  return { cols: nextCols, rows: nextRows };
+}
+
+function waitNextFrame() {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
 }
 
 function getComplexityCap(totalBeads: number) {
@@ -1982,6 +4616,80 @@ function mmToPt(mm: number) {
 
 function ptToMm(pt: number) {
   return (pt * 25.4) / 72;
+}
+
+function buildPdfPagination(converted: Converted, beadMm: number): PdfPaginationInfo {
+  const pageW = mmToPt(210);
+  const pageH = mmToPt(297);
+  const margin = mmToPt(8);
+  const gap = mmToPt(4);
+  const sideTableWidth = mmToPt(44);
+  const usableW = pageW - margin * 2;
+  const usableH = pageH - margin * 2;
+  const headerH = 30;
+  const maxPatternHPt = usableH - headerH - 8;
+
+  const patternWPt = mmToPt(converted.cols * beadMm);
+  const patternHPt = mmToPt(converted.rows * beadMm);
+  const hasRightSpace = patternWPt + gap + sideTableWidth <= usableW;
+  const fitsSinglePage = patternWPt <= usableW && patternHPt <= maxPatternHPt;
+
+  if (fitsSinglePage) {
+    return {
+      fitsSinglePage: true,
+      hasRightSpace,
+      tileCols: converted.cols,
+      tileRows: converted.rows,
+      xPages: 1,
+      yPages: 1,
+      totalTiles: 1,
+      tiles: [
+        {
+          pageNo: 1,
+          px: 0,
+          py: 0,
+          startCol: 0,
+          startRow: 0,
+          colsPart: converted.cols,
+          rowsPart: converted.rows
+        }
+      ]
+    };
+  }
+
+  const tileCols = Math.max(1, Math.floor(ptToMm(usableW) / beadMm));
+  const tileRows = Math.max(1, Math.floor(ptToMm(maxPatternHPt) / beadMm));
+  const xPages = Math.ceil(converted.cols / tileCols);
+  const yPages = Math.ceil(converted.rows / tileRows);
+  const tiles: PdfTileInfo[] = [];
+  let pageNo = 1;
+  for (let py = 0; py < yPages; py++) {
+    for (let px = 0; px < xPages; px++) {
+      const startCol = px * tileCols;
+      const startRow = py * tileRows;
+      tiles.push({
+        pageNo,
+        px,
+        py,
+        startCol,
+        startRow,
+        colsPart: Math.min(tileCols, converted.cols - startCol),
+        rowsPart: Math.min(tileRows, converted.rows - startRow)
+      });
+      pageNo += 1;
+    }
+  }
+
+  return {
+    fitsSinglePage: false,
+    hasRightSpace,
+    tileCols,
+    tileRows,
+    xPages,
+    yPages,
+    totalTiles: tiles.length,
+    tiles
+  };
 }
 
 function dataUrlToBytes(dataUrl: string) {
@@ -2175,6 +4883,36 @@ function fileToImage(file: File): Promise<HTMLImageElement> {
   });
 }
 
+function dataUrlToImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+async function dataUrlToBitmap(url: string): Promise<ImageBitmap> {
+  const img = await dataUrlToImage(url);
+  return createImageBitmap(img);
+}
+
+function formatLocalTime(ts: number) {
+  if (!Number.isFinite(ts) || ts <= 0) return '-';
+  const d = new Date(ts);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+}
+
+function buildDraftFingerprint(snapshot: DraftSnapshot) {
+  return JSON.stringify(snapshot);
+}
+
 function adjustGridByMode(cols: number, rows: number, imgW: number, imgH: number, mode: LayoutMode) {
   if (mode !== 'fit') return { cols, rows };
   const ratio = imgW / imgH;
@@ -2282,11 +5020,90 @@ function mapColor(rgb: [number, number, number], palette: PaletteColor[], strate
   return best ?? { name: 'N/A', hex: '#000000', rgb: [0, 0, 0], lab: [0, 0, 0] };
 }
 
+function mergeMappedCellsByDeltaE(cells: Cell[], palette: PaletteColor[], threshold: number) {
+  if (threshold <= 0 || !cells.length) return { cells, mergedColorKinds: 0, changedCells: 0 };
+  const usedCount = new Map<string, number>();
+  for (const c of cells) {
+    if (c.isEmpty) continue;
+    usedCount.set(c.colorName, (usedCount.get(c.colorName) ?? 0) + 1);
+  }
+  const used = palette.filter((p) => usedCount.has(p.name));
+  if (used.length <= 1) return { cells, mergedColorKinds: 0, changedCells: 0 };
+
+  const parent = used.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  const unite = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
+  for (let i = 0; i < used.length; i++) {
+    for (let j = i + 1; j < used.length; j++) {
+      if (deltaE2000(used[i].lab, used[j].lab) <= threshold) unite(i, j);
+    }
+  }
+
+  const groups = new Map<number, number[]>();
+  for (let i = 0; i < used.length; i++) {
+    const root = find(i);
+    const arr = groups.get(root) ?? [];
+    arr.push(i);
+    groups.set(root, arr);
+  }
+
+  const repByName = new Map<string, PaletteColor>();
+  for (const members of groups.values()) {
+    let rep = used[members[0]];
+    let repCount = usedCount.get(rep.name) ?? 0;
+    for (const idx of members) {
+      const c = used[idx];
+      const cnt = usedCount.get(c.name) ?? 0;
+      if (cnt > repCount) {
+        rep = c;
+        repCount = cnt;
+      }
+    }
+    for (const idx of members) repByName.set(used[idx].name, rep);
+  }
+
+  let changedCells = 0;
+  const nextCells = cells.map((c) => {
+    if (c.isEmpty) return c;
+    const rep = repByName.get(c.colorName);
+    if (!rep || rep.name === c.colorName) return c;
+    changedCells += 1;
+    return { ...c, colorName: rep.name, hex: rep.hex };
+  });
+  return { cells: nextCells, mergedColorKinds: used.length - groups.size, changedCells };
+}
+
 function median(arr: number[]) {
   if (!arr.length) return 0;
   arr.sort((a, b) => a - b);
   const m = Math.floor(arr.length / 2);
   return arr.length % 2 ? arr[m] : Math.round((arr[m - 1] + arr[m]) / 2);
+}
+
+function normalizeColorHex(input: string) {
+  const hex = String(input ?? '').trim();
+  if (/^#[0-9A-Fa-f]{6}$/.test(hex)) return hex.toUpperCase();
+  return '#FFFFFF';
+}
+
+function clampByte(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(255, Math.max(0, Math.round(value)));
+}
+
+function rgbToHex(r: number, g: number, b: number) {
+  const to2 = (n: number) => clampByte(n).toString(16).toUpperCase().padStart(2, '0');
+  return `#${to2(r)}${to2(g)}${to2(b)}`;
 }
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -2440,6 +5257,7 @@ function escapeHtml(s: string) {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
 }
+
 
 
 
