@@ -1,118 +1,335 @@
 ﻿openapi: 3.0.3
 info:
   title: PixChi API
-  version: 0.1.0
+  version: 0.2.0
+  description: |
+    Current backend contract used by apps/web.
+servers:
+  - url: http://localhost:8787
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          nullable: true
+    AuthUser:
+      type: object
+      required: [id, username, role]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        role:
+          type: string
+          enum: [guest, member, pro, admin]
+    DraftVersionSummary:
+      type: object
+      required: [id, at, reason]
+      properties:
+        id: { type: string }
+        at: { type: integer, format: int64 }
+        reason:
+          type: string
+          enum: [manual, autosave]
+        note: { type: string }
+    DraftSummary:
+      type: object
+      required: [id, name, createdAt, updatedAt, versionCount, versions]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        createdAt: { type: integer, format: int64 }
+        updatedAt: { type: integer, format: int64 }
+        versionCount: { type: integer }
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DraftVersionSummary'
+    PaletteColor:
+      type: object
+      required: [name, hex]
+      properties:
+        name: { type: string }
+        hex: { type: string, pattern: '^#[0-9A-Fa-f]{6}$' }
+    CustomPaletteGroup:
+      type: object
+      required: [id, name, colors]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        colors:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaletteColor'
 paths:
-  /api/projects:
-    post:
-      summary: Create project
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name, groupName, grid, image]
-              properties:
-                name: { type: string }
-                groupName: { type: string }
-                mode: { type: string, enum: [fit, lock, pad] }
-                grid:
-                  type: object
-                  properties:
-                    cols: { type: integer }
-                    rows: { type: integer }
-                image:
-                  type: object
-                  properties:
-                    width: { type: integer }
-                    height: { type: integer }
+  /api/health:
+    get:
+      summary: API health check
       responses:
         '200':
           description: ok
-  /api/projects/{id}/convert:
+  /api/auth/login:
     post:
-      summary: Convert image to bead grid
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
+      summary: Login
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required: [username, password]
               properties:
-                algorithm: { type: string, enum: [lab_nearest, rgb_nearest, palette_priority] }
-                denoiseLevel: { type: integer, minimum: 0, maximum: 10 }
-                mergeThreshold: { type: number }
+                username: { type: string }
+                password: { type: string }
       responses:
         '200':
-          description: converted
-  /api/projects/{id}/cells:
-    patch:
-      summary: Batch edit cell color names
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
+          description: login success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accessToken, refreshToken, user]
+                properties:
+                  accessToken: { type: string }
+                  refreshToken: { type: string }
+                  user:
+                    $ref: '#/components/schemas/AuthUser'
+        '400':
+          description: invalid payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/auth/refresh:
+    post:
+      summary: Refresh access token by refresh token
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required: [refreshToken]
               properties:
-                edits:
-                  type: array
-                  items:
-                    type: object
-                    required: [x, y, colorName]
-                    properties:
-                      x: { type: integer }
-                      y: { type: integer }
-                      colorName: { type: string }
+                refreshToken: { type: string }
       responses:
         '200':
-          description: patched
-  /api/projects/{id}/stats:
+          description: refresh success
+        '400':
+          description: invalid payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          description: invalid refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/auth/logout:
+    post:
+      summary: Revoke refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: logout success
+        '400':
+          description: invalid payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/auth/me:
     get:
-      summary: Get full color statistics
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string }
+      summary: Get current user by access token
+      security:
+        - bearerAuth: []
       responses:
         '200':
-          description: full statistics
+          description: current user
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/palette/groups:
+    get:
+      summary: List accessible palette group summaries
+      responses:
+        '200':
+          description: group summaries
+  /api/palette/groups/{code}:
+    get:
+      summary: Get palette group detail (guest sees only system groups)
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: group detail
+        '404':
+          description: not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/palette/pro/groups:
+    get:
+      summary: Pro/Admin only - list all palette group summaries
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: group summaries
+        '403':
+          description: forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /api/palette/pro/groups/{code}:
+    get:
+      summary: Pro/Admin only - get full palette group detail
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: group detail
+        '403':
+          description: forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '404':
+          description: not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/projects:
+    get:
+      summary: List current user's cloud drafts
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: draft summaries
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  totalBeads: { type: integer }
-                  totalColors: { type: integer }
-                  rows: { type: integer }
-                  cols: { type: integer }
-                  colors:
+                  drafts:
                     type: array
-                    description: Full list, never truncated.
                     items:
-                      type: object
-                      properties:
-                        name: { type: string }
-                        hex: { type: string }
-                        count: { type: integer }
-                        ratio: { type: number }
-                        unitCost: { type: number }
-                        lineTotal: { type: number }
-  /api/projects/{id}/export/pdf:
+                      $ref: '#/components/schemas/DraftSummary'
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: guest role forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    post:
+      summary: Create cloud draft (member limited to 5)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, snapshot]
+              properties:
+                name: { type: string }
+                snapshot: {}
+      responses:
+        '200':
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+        '409':
+          description: member limit reached
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/projects/{id}:
     get:
-      summary: Export pattern pdf
+      summary: Get latest snapshot or a specified version snapshot
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: versionId
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: snapshot
+        '404':
+          description: not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    delete:
+      summary: Delete cloud draft
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: id
@@ -120,26 +337,248 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: pdf file
-  /api/projects/{id}/export/csv:
-    get:
-      summary: Export full material csv
+          description: deleted
+        '404':
+          description: not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/projects/{id}/save:
+    put:
+      summary: Save a new project version and update latest snapshot
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: id
           required: true
           schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [snapshot, reason]
+              properties:
+                snapshot: {}
+                reason:
+                  type: string
+                  enum: [manual, autosave]
+                nextName: { type: string }
+                note: { type: string }
       responses:
         '200':
-          description: csv file
-  /api/projects/{id}/quote:
-    get:
-      summary: Quote summary
+          description: saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  versionId: { type: string }
+        '404':
+          description: project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/projects/{id}/name:
+    patch:
+      summary: Rename project
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: id
           required: true
           schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
       responses:
         '200':
-          description: quote totals
+          description: renamed
+        '404':
+          description: project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/projects/{id}/version-note:
+    patch:
+      summary: Update one version note
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [versionId]
+              properties:
+                versionId: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: updated
+        '404':
+          description: project not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/custom-palettes:
+    get:
+      summary: List current user's custom palette groups
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: custom groups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CustomPaletteGroup'
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: guest role forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/user-settings:
+    get:
+      summary: Get current user's persisted UI settings
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: settings payload
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings:
+                    type: object
+                    properties:
+                      shortcutConfig:
+                        type: object
+                        additionalProperties:
+                          type: array
+                          items: { type: string }
+                      constructionTemplates:
+                        type: array
+                        items: {}
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: guest role forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    put:
+      summary: Upsert current user's persisted UI settings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shortcutConfig:
+                  type: object
+                  additionalProperties:
+                    type: array
+                    items: { type: string }
+                constructionTemplates:
+                  type: array
+                  items: {}
+      responses:
+        '200':
+          description: updated
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: guest role forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    put:
+      summary: Replace current user's custom palette groups
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                groups:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, colors]
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+                      colors:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PaletteColor'
+      responses:
+        '200':
+          description: replaced
+        '401':
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '403':
+          description: guest role forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'

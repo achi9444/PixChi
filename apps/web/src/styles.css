@@ -42,9 +42,29 @@ h1 {
 .top-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+  position: relative;
 }
 .top-actions button {
   width: auto;
+}
+.auth-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  width: 320px;
+  background: #f7f2ed;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  box-shadow: 0 10px 24px #3d302720;
+  z-index: 20;
+}
+.auth-panel label {
+  margin: 4px 0 8px;
+}
+.auth-panel .status {
+  margin: 6px 0;
 }
 .layout {
   display: grid;

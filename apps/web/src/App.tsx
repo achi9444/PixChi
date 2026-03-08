@@ -3,6 +3,8 @@ import { PUBLIC_PRICING_PRESET, COMPLEXITY_CAP_TIERS } from './config/pricing';
 import { SHORTCUTS } from './config/shortcuts';
 import { createDraft, deleteDraft, getDraftLimit, getDraftSnapshot, listDrafts, renameDraft, setDraftVersionNote, updateDraft, type DraftSnapshot, type DraftSummary } from './services/draftStore';
 import { loadCustomPaletteGroups, makeCustomPaletteId, saveCustomPaletteGroups, type CustomPaletteColor, type CustomPaletteGroup } from './services/customPaletteStore';
+import { ApiClient, type AuthUser, type CustomPaletteGroupDto, type DraftSummaryDto, type PaletteApiGroupDetail, type UserSettingsDto } from './services/api';
+import { loadAuthAccessToken, loadAuthRefreshToken, loadAuthUser, persistAuthAccessToken, persistAuthRefreshToken, persistAuthUser } from './services/authStorage';
 
 type MatchStrategy = 'lab_nearest' | 'rgb_nearest';
 type LayoutMode = 'fit' | 'lock' | 'pad';
@@ -49,16 +51,6 @@ type CellChange = {
 type ChangeBatch = {
   label: string;
   changes: CellChange[];
-};
-
-type PaletteJson = {
-  groups?: Array<{
-    name: string;
-    colors?: Array<{
-      name: string;
-      hex: string;
-    }>;
-  }>;
 };
 
 type CropRect = {
@@ -143,7 +135,7 @@ const SHORTCUT_LABELS: Record<keyof typeof SHORTCUTS, string> = {
 };
 const ASSET_BASE_URL = import.meta.env.BASE_URL;
 const PDF_FONT_URL = `${ASSET_BASE_URL}fonts/NotoSansTC-VF.ttf`;
-const PALETTE_JSON_URL = `${ASSET_BASE_URL}color-palette.json`;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:8787';
 let pdfRuntimePromise: Promise<{
   PDFDocument: any;
   StandardFonts: any;
@@ -194,11 +186,33 @@ function loadShortcutConfig(): ShortcutConfig {
   }
 }
 
+function normalizeShortcutConfig(raw: unknown): ShortcutConfig {
+  const fallback = buildDefaultShortcutConfig();
+  if (!raw || typeof raw !== 'object') return fallback;
+  const parsed = raw as Partial<Record<keyof typeof SHORTCUTS, string[]>>;
+  for (const key of Object.keys(fallback) as Array<keyof typeof SHORTCUTS>) {
+    const next = parsed[key];
+    if (Array.isArray(next) && next.length) {
+      fallback[key] = next.map((x) => String(x).trim()).filter(Boolean);
+    }
+  }
+  return fallback;
+}
+
 function loadConstructionTemplates(): ConstructionTemplate[] {
   try {
     const raw = localStorage.getItem(CONSTRUCTION_TEMPLATE_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as Array<Partial<ConstructionTemplate>>;
+    return normalizeConstructionTemplates(parsed);
+  } catch {
+    return [];
+  }
+}
+
+function normalizeConstructionTemplates(raw: unknown): ConstructionTemplate[] {
+  try {
+    const parsed = Array.isArray(raw) ? (raw as Array<Partial<ConstructionTemplate>>) : [];
     const out: ConstructionTemplate[] = [];
     for (const item of parsed ?? []) {
       const id = String(item.id ?? '').trim();
@@ -237,6 +251,28 @@ function toCustomPaletteViewGroup(group: CustomPaletteGroup): PaletteGroup {
   };
 }
 
+function toDraftSummaryFromApi(input: DraftSummaryDto): DraftSummary {
+  return {
+    id: input.id,
+    name: input.name,
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt,
+    versionCount: input.versionCount,
+    versions: (input.versions ?? []).map((v) => ({
+      id: v.id,
+      at: v.at,
+      reason: v.reason,
+      note: v.note
+    }))
+  };
+}
+
+function getCloudDraftLimit(user: AuthUser | null): number | null {
+  if (!user) return null;
+  if (user.role === 'member') return 5;
+  return null;
+}
+
 function getPageFromHash(): 'main' | 'palette' {
   const hash = (typeof window !== 'undefined' ? window.location.hash : '').toLowerCase();
   if (hash.includes('palette')) return 'palette';
@@ -266,6 +302,10 @@ export default function App() {
   const activeDraftIdRef = useRef('');
   const lastManualSaveAtRef = useRef(0);
   const lastSavedFingerprintRef = useRef('');
+  const customPaletteSyncLockRef = useRef(false);
+  const customPaletteSyncTimerRef = useRef<number | null>(null);
+  const userSettingsSyncLockRef = useRef(false);
+  const userSettingsSyncTimerRef = useRef<number | null>(null);
 
   const [projectName, setProjectName] = useState('未命名專案');
   const [builtinGroups, setBuiltinGroups] = useState<PaletteGroup[]>([]);
@@ -300,11 +340,15 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [isCanvasFullscreen, setIsCanvasFullscreen] = useState(false);
-  const [proMode] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    const query = new URLSearchParams(window.location.search).get('pro');
-    return query === '1';
-  });
+  const [authAccessToken, setAuthAccessToken] = useState(() => loadAuthAccessToken());
+  const [authRefreshToken, setAuthRefreshToken] = useState(() => loadAuthRefreshToken());
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => loadAuthUser());
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authPanelOpen, setAuthPanelOpen] = useState(false);
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginErrorText, setLoginErrorText] = useState('');
+  const proMode = authUser?.role === 'pro' || authUser?.role === 'admin';
   const [showRuler, setShowRuler] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
   const [guideEvery, setGuideEvery] = useState(5);
@@ -432,29 +476,10 @@ export default function App() {
   }, [paletteEditGroupId, customPaletteGroups]);
 
   useEffect(() => {
-    if (!proMode) return;
-    localStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(shortcutConfig));
-  }, [proMode, shortcutConfig]);
-
-  useEffect(() => {
-    const loaded = loadCustomPaletteGroups();
-    setCustomPaletteGroups(loaded);
-  }, []);
-
-  useEffect(() => {
-    saveCustomPaletteGroups(customPaletteGroups);
-  }, [customPaletteGroups]);
-
-  useEffect(() => {
     const onHash = () => setPage(getPageFromHash());
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
-
-  useEffect(() => {
-    if (!proMode) return;
-    localStorage.setItem(CONSTRUCTION_TEMPLATE_STORAGE_KEY, JSON.stringify(constructionTemplates));
-  }, [constructionTemplates, proMode]);
 
   useEffect(() => {
     if (proMode) return;
@@ -744,34 +769,282 @@ export default function App() {
     }
   }, [constructionTasks, constructionDoneMap, proMode]);
 
+  useEffect(() => {
+    persistAuthAccessToken(authAccessToken);
+  }, [authAccessToken]);
+
+  useEffect(() => {
+    persistAuthRefreshToken(authRefreshToken);
+  }, [authRefreshToken]);
+
+  useEffect(() => {
+    persistAuthUser(authUser);
+  }, [authUser]);
+
+  const clearAuthSession = useCallback(() => {
+    setAuthAccessToken('');
+    setAuthRefreshToken('');
+    setAuthUser(null);
+  }, []);
+
+  const handleTokenRefreshed = useCallback(() => {
+    setStatusText('登入狀態已自動續期。');
+  }, []);
+
+  const handleUnauthorized = useCallback(() => {
+    clearAuthSession();
+    setStatusText('登入狀態已過期，請重新登入。');
+  }, [clearAuthSession]);
+
+  const apiClient = useMemo(
+    () =>
+      new ApiClient({
+        baseUrl: API_BASE_URL,
+        getAccessToken: () => authAccessToken,
+        getRefreshToken: () => authRefreshToken,
+        onAuthUpdate: ({ accessToken, refreshToken, user }) => {
+          setAuthAccessToken(accessToken);
+          setAuthRefreshToken(refreshToken);
+          if (user) setAuthUser(user);
+        },
+        onTokenRefreshed: handleTokenRefreshed,
+        onUnauthorized: handleUnauthorized
+      }),
+    [authAccessToken, authRefreshToken, handleTokenRefreshed, handleUnauthorized]
+  );
+
+  useEffect(() => {
+    if (!authAccessToken && !authRefreshToken) return;
+    let canceled = false;
+    const run = async () => {
+      try {
+        const data = await apiClient.getMe();
+        if (canceled) return;
+        if (!data.user) {
+          clearAuthSession();
+          return;
+        }
+        setAuthUser(data.user);
+      } catch {
+        if (!canceled) clearAuthSession();
+      }
+    };
+    void run();
+    return () => {
+      canceled = true;
+    };
+  }, [authAccessToken, authRefreshToken, apiClient, clearAuthSession]);
+
+  useEffect(() => {
+    let canceled = false;
+    const run = async () => {
+      customPaletteSyncLockRef.current = true;
+      try {
+        if (!authUser) {
+          const loaded = loadCustomPaletteGroups();
+          if (!canceled) setCustomPaletteGroups(loaded);
+          return;
+        }
+        const data = await apiClient.getCustomPalettes();
+        if (canceled) return;
+        const groups = (data.groups ?? []).map((g) => ({
+          id: g.id,
+          name: g.name,
+          colors: (g.colors ?? []).map((c) => ({ name: c.name, hex: normalizeColorHex(c.hex) }))
+        })) as CustomPaletteGroup[];
+        setCustomPaletteGroups(groups);
+      } catch {
+        if (!canceled) {
+          const loaded = loadCustomPaletteGroups();
+          setCustomPaletteGroups(loaded);
+        }
+      } finally {
+        customPaletteSyncLockRef.current = false;
+      }
+    };
+    void run();
+    return () => {
+      canceled = true;
+    };
+  }, [authUser, apiClient]);
+
+  useEffect(() => {
+    if (customPaletteSyncLockRef.current) return;
+    if (customPaletteSyncTimerRef.current != null) {
+      window.clearTimeout(customPaletteSyncTimerRef.current);
+      customPaletteSyncTimerRef.current = null;
+    }
+    if (!authUser) {
+      saveCustomPaletteGroups(customPaletteGroups);
+      return;
+    }
+    customPaletteSyncTimerRef.current = window.setTimeout(() => {
+      const payload: CustomPaletteGroupDto[] = customPaletteGroups.map((g) => ({
+        id: g.id,
+        name: g.name,
+        colors: g.colors.map((c) => ({ name: c.name, hex: normalizeColorHex(c.hex) }))
+      }));
+      void apiClient.putCustomPalettes(payload).catch(() => {
+        // keep UI responsive; status toast is handled by action handlers
+      });
+      customPaletteSyncTimerRef.current = null;
+    }, 300);
+    return () => {
+      if (customPaletteSyncTimerRef.current != null) {
+        window.clearTimeout(customPaletteSyncTimerRef.current);
+        customPaletteSyncTimerRef.current = null;
+      }
+    };
+  }, [authUser, customPaletteGroups, apiClient]);
+
+  useEffect(() => {
+    let canceled = false;
+    const run = async () => {
+      userSettingsSyncLockRef.current = true;
+      try {
+        if (!authUser) {
+          if (!canceled) {
+            setShortcutConfig(loadShortcutConfig());
+            setConstructionTemplates(loadConstructionTemplates());
+          }
+          return;
+        }
+        const data = await apiClient.getUserSettings();
+        if (canceled) return;
+        const settings = data.settings ?? {};
+        if (settings.shortcutConfig) {
+          setShortcutConfig(normalizeShortcutConfig(settings.shortcutConfig));
+        }
+        if (settings.constructionTemplates) {
+          setConstructionTemplates(normalizeConstructionTemplates(settings.constructionTemplates));
+        }
+      } catch {
+        if (!canceled && !authUser) {
+          setShortcutConfig(loadShortcutConfig());
+          setConstructionTemplates(loadConstructionTemplates());
+        }
+      } finally {
+        userSettingsSyncLockRef.current = false;
+      }
+    };
+    void run();
+    return () => {
+      canceled = true;
+    };
+  }, [authUser, apiClient]);
+
+  useEffect(() => {
+    if (userSettingsSyncLockRef.current) return;
+    if (userSettingsSyncTimerRef.current != null) {
+      window.clearTimeout(userSettingsSyncTimerRef.current);
+      userSettingsSyncTimerRef.current = null;
+    }
+    if (!authUser) {
+      if (proMode) {
+        localStorage.setItem(SHORTCUTS_STORAGE_KEY, JSON.stringify(shortcutConfig));
+        localStorage.setItem(CONSTRUCTION_TEMPLATE_STORAGE_KEY, JSON.stringify(constructionTemplates));
+      }
+      return;
+    }
+    if (!proMode) return;
+    userSettingsSyncTimerRef.current = window.setTimeout(() => {
+      const payload: UserSettingsDto = {
+        shortcutConfig,
+        constructionTemplates
+      };
+      void apiClient.putUserSettings(payload).catch(() => {
+        // keep UI responsive
+      });
+      userSettingsSyncTimerRef.current = null;
+    }, 300);
+    return () => {
+      if (userSettingsSyncTimerRef.current != null) {
+        window.clearTimeout(userSettingsSyncTimerRef.current);
+        userSettingsSyncTimerRef.current = null;
+      }
+    };
+  }, [authUser, proMode, shortcutConfig, constructionTemplates, apiClient]);
+
   const loadPalette = useCallback(async () => {
-    try {
-      const res = await fetch(`${PALETTE_JSON_URL}?t=${Date.now()}`, { cache: 'no-cache' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as PaletteJson;
-      const parsed = (data.groups ?? []).map((g) => ({
+    const parseGroups = (groupsRaw: Array<{ name: string; colors?: Array<{ name?: string; hex?: string }> }>) => {
+      return groupsRaw.map((g) => ({
         isCustom: false,
         name: g.name,
         colors: (g.colors ?? [])
           .filter((c) => /^#[0-9a-fA-F]{6}$/.test(c.hex ?? ''))
           .map((c) => {
-            const rgb = hexToRgb(c.hex.toUpperCase());
+            const rgb = hexToRgb((c.hex ?? '#000000').toUpperCase());
             return {
-              name: c.name,
-              hex: c.hex.toUpperCase(),
+              name: String(c.name ?? '').trim() || '未命名色號',
+              hex: (c.hex ?? '#000000').toUpperCase(),
               rgb,
               lab: rgbToLab(...rgb)
             } as PaletteColor;
           })
       }));
+    };
+
+    try {
+      const summaryData = await apiClient.getPaletteGroups();
+      const summaries = summaryData.groups ?? [];
+      if (!summaries.length) throw new Error('API 找不到可用色庫群組');
+      const detailDataList = await Promise.all(
+        summaries.map((g) => apiClient.getPaletteGroup(g.code))
+      );
+      const groupsRaw = detailDataList
+        .map((x) => x.group)
+        .filter((x): x is PaletteApiGroupDetail => !!x?.name)
+        .map((g) => ({ name: g.name, colors: g.colors ?? [] }));
+      const parsed = parseGroups(groupsRaw);
 
       if (!parsed.length) throw new Error('找不到可用色庫群組');
       setBuiltinGroups(parsed);
-      setStatusText(`色庫載入完成，內建群組數：${parsed.length}`);
+      setStatusText(`色庫載入完成（API），內建群組數：${parsed.length}`);
     } catch (err) {
-      setStatusText(`無法載入 color-palette.json：${(err as Error).message}`);
+      setStatusText(`無法載入色庫（API）：${(err as Error).message}`);
     }
-  }, []);
+  }, [apiClient]);
+
+  const loginByForm = useCallback(async () => {
+    if (authBusy) return;
+    const username = loginUsername.trim();
+    const password = loginPassword;
+    if (!username || !password) {
+      setLoginErrorText('請輸入帳號與密碼。');
+      return;
+    }
+    setAuthBusy(true);
+    setLoginErrorText('');
+    try {
+      const data = await apiClient.login(username, password);
+      if (!data.accessToken || !data.refreshToken || !data.user) throw new Error('登入回應不完整');
+      setAuthAccessToken(data.accessToken);
+      setAuthRefreshToken(data.refreshToken);
+      setAuthUser(data.user);
+      setStatusText(`登入成功：${data.user.username} (${data.user.role})`);
+      setAuthPanelOpen(false);
+      setLoginPassword('');
+    } catch (err) {
+      clearAuthSession();
+      const msg = `登入失敗：${(err as Error).message}`;
+      setLoginErrorText(msg);
+      setStatusText(msg);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [authBusy, apiClient, clearAuthSession, loginUsername, loginPassword]);
+
+  const logout = useCallback(async () => {
+    try {
+      await apiClient.logout();
+    } finally {
+      clearAuthSession();
+      setAuthPanelOpen(false);
+      setLoginPassword('');
+      setLoginErrorText('');
+      setStatusText('已登出，回到一般版訪客模式。');
+    }
+  }, [apiClient, clearAuthSession]);
 
   useEffect(() => {
     void loadPalette();
@@ -846,16 +1119,22 @@ export default function App() {
   }, [pdfPagination?.totalTiles]);
 
   const refreshDrafts = useCallback(async () => {
-    const rows = await listDrafts();
-    setDrafts(rows);
-    if (activeDraftId && !rows.some((d) => d.id === activeDraftId)) {
-      setActiveDraftId('');
-      setActiveDraftVersionId('');
-      setLastSavedAt(null);
-      lastSavedFingerprintRef.current = '';
-      lastManualSaveAtRef.current = 0;
+    try {
+      const rows = authUser
+        ? ((await apiClient.listProjects()).drafts ?? []).map(toDraftSummaryFromApi)
+        : await listDrafts();
+      setDrafts(rows);
+      if (activeDraftId && !rows.some((d) => d.id === activeDraftId)) {
+        setActiveDraftId('');
+        setActiveDraftVersionId('');
+        setLastSavedAt(null);
+        lastSavedFingerprintRef.current = '';
+        lastManualSaveAtRef.current = 0;
+      }
+    } catch (err) {
+      setStatusText(`草稿清單讀取失敗：${(err as Error).message}`);
     }
-  }, [activeDraftId]);
+  }, [activeDraftId, authUser, apiClient]);
 
   useEffect(() => {
     void refreshDrafts();
@@ -899,12 +1178,21 @@ export default function App() {
       setIsDraftBusy(true);
       try {
         if (asNew || !activeDraftId) {
-          if (drafts.length >= getDraftLimit()) {
-            setStatusText(`未登入模式最多 ${getDraftLimit()} 份草稿，請先刪除一份再新增。`);
+          const guestLimit = getDraftLimit();
+          const cloudLimit = getCloudDraftLimit(authUser);
+          if (!authUser && drafts.length >= guestLimit) {
+            setStatusText(`未登入模式最多 ${guestLimit} 份草稿，請先刪除一份再新增。`);
+            return;
+          }
+          if (authUser && cloudLimit != null && drafts.length >= cloudLimit) {
+            setStatusText(`一般版登入最多 ${cloudLimit} 份雲端草稿，請先刪除一份再新增。`);
             return;
           }
           const draftName = (projectName || '').trim() || `草稿 ${drafts.length + 1}`;
-          const newId = await createDraft(draftName, snapshot);
+          const newId = authUser
+            ? ((await apiClient.createProject(draftName, snapshot)).id ?? '')
+            : await createDraft(draftName, snapshot);
+          if (!newId) throw new Error('PROJECT_CREATE_FAILED');
           setActiveDraftId(newId);
           setActiveDraftVersionId('');
           const now = Date.now();
@@ -913,14 +1201,19 @@ export default function App() {
           lastSavedFingerprintRef.current = snapshotFingerprint;
           if (!silent) setStatusText(`已新增草稿：${draftName}`);
         } else {
-          await updateDraft(
-            activeDraftId,
-            snapshot,
-            reason,
-            (projectName || '').trim() || undefined,
-            reason === 'manual' ? '手動存檔' : '自動存檔'
-          );
-          setActiveDraftVersionId('');
+          const note = reason === 'manual' ? '手動存檔' : '自動存檔';
+          if (authUser) {
+            const result = await apiClient.saveProject(activeDraftId, {
+              snapshot,
+              reason,
+              nextName: (projectName || '').trim() || undefined,
+              note
+            });
+            setActiveDraftVersionId(result.versionId ?? '');
+          } else {
+            await updateDraft(activeDraftId, snapshot, reason, (projectName || '').trim() || undefined, note);
+            setActiveDraftVersionId('');
+          }
           const now = Date.now();
           setLastSavedAt(now);
           if (reason === 'manual') lastManualSaveAtRef.current = now;
@@ -930,8 +1223,11 @@ export default function App() {
         await refreshDrafts();
       } catch (err) {
         const message = (err as Error).message;
-        if (message === 'MAX_DRAFTS_REACHED') {
+        if (!authUser && message === 'MAX_DRAFTS_REACHED') {
           setStatusText(`未登入模式最多 ${getDraftLimit()} 份草稿，請先刪除一份再新增。`);
+        } else if (authUser && message.startsWith('MEMBER_DRAFT_LIMIT_REACHED')) {
+          const cloudLimit = getCloudDraftLimit(authUser) ?? 5;
+          setStatusText(`一般版登入最多 ${cloudLimit} 份雲端草稿，請先刪除一份再新增。`);
         } else {
           setStatusText(`草稿儲存失敗：${message}`);
         }
@@ -939,7 +1235,7 @@ export default function App() {
         setIsDraftBusy(false);
       }
     },
-    [imageDataUrl, converted, buildDraftSnapshot, activeDraftId, drafts.length, projectName, refreshDrafts]
+    [imageDataUrl, converted, buildDraftSnapshot, activeDraftId, drafts.length, projectName, refreshDrafts, authUser, apiClient]
   );
 
   const loadDraftById = useCallback(
@@ -947,7 +1243,9 @@ export default function App() {
       if (!draftId) return;
       setIsDraftBusy(true);
       try {
-        const snapshot = await getDraftSnapshot(draftId, versionId);
+        const snapshot = authUser
+          ? ((await apiClient.getProjectSnapshot(draftId, versionId)).snapshot as DraftSnapshot | undefined)
+          : await getDraftSnapshot(draftId, versionId);
         if (!snapshot) {
           setStatusText('找不到草稿內容。');
           return;
@@ -990,7 +1288,7 @@ export default function App() {
         setIsDraftBusy(false);
       }
     },
-    [activeGroupName]
+    [activeGroupName, authUser, apiClient]
   );
 
   const removeDraftById = useCallback(
@@ -998,7 +1296,11 @@ export default function App() {
       if (!draftId) return;
       setIsDraftBusy(true);
       try {
-        await deleteDraft(draftId);
+        if (authUser) {
+          await apiClient.deleteProject(draftId);
+        } else {
+          await deleteDraft(draftId);
+        }
         if (activeDraftId === draftId) {
           setActiveDraftId('');
           setActiveDraftVersionId('');
@@ -1014,7 +1316,7 @@ export default function App() {
         setIsDraftBusy(false);
       }
     },
-    [activeDraftId, refreshDrafts]
+    [activeDraftId, refreshDrafts, authUser, apiClient]
   );
 
   const saveDraftRename = useCallback(async () => {
@@ -1026,7 +1328,11 @@ export default function App() {
     }
     setIsDraftBusy(true);
     try {
-      await renameDraft(activeDraftId, name);
+      if (authUser) {
+        await apiClient.renameProject(activeDraftId, name);
+      } else {
+        await renameDraft(activeDraftId, name);
+      }
       await refreshDrafts();
       setStatusText('草稿名稱已更新。');
     } catch (err) {
@@ -1034,13 +1340,17 @@ export default function App() {
     } finally {
       setIsDraftBusy(false);
     }
-  }, [activeDraftId, draftRenameInput, refreshDrafts]);
+  }, [activeDraftId, draftRenameInput, refreshDrafts, authUser, apiClient]);
 
   const saveVersionNote = useCallback(async () => {
     if (!activeDraftId || !activeDraftVersionId) return;
     setIsDraftBusy(true);
     try {
-      await setDraftVersionNote(activeDraftId, activeDraftVersionId, draftVersionNoteInput.trim());
+      if (authUser) {
+        await apiClient.setProjectVersionNote(activeDraftId, activeDraftVersionId, draftVersionNoteInput.trim());
+      } else {
+        await setDraftVersionNote(activeDraftId, activeDraftVersionId, draftVersionNoteInput.trim());
+      }
       await refreshDrafts();
       setStatusText('版本備註已更新。');
     } catch (err) {
@@ -1048,7 +1358,7 @@ export default function App() {
     } finally {
       setIsDraftBusy(false);
     }
-  }, [activeDraftId, activeDraftVersionId, draftVersionNoteInput, refreshDrafts]);
+  }, [activeDraftId, activeDraftVersionId, draftVersionNoteInput, refreshDrafts, authUser, apiClient]);
 
   const compareDraftVersions = useCallback(async () => {
     if (!activeDraftId || !compareVersionA || !compareVersionB) {
@@ -1056,8 +1366,12 @@ export default function App() {
       return;
     }
     try {
-      const a = await getDraftSnapshot(activeDraftId, compareVersionA);
-      const b = await getDraftSnapshot(activeDraftId, compareVersionB);
+      const a = authUser
+        ? ((await apiClient.getProjectSnapshot(activeDraftId, compareVersionA)).snapshot as DraftSnapshot | undefined)
+        : await getDraftSnapshot(activeDraftId, compareVersionA);
+      const b = authUser
+        ? ((await apiClient.getProjectSnapshot(activeDraftId, compareVersionB)).snapshot as DraftSnapshot | undefined)
+        : await getDraftSnapshot(activeDraftId, compareVersionB);
       if (!a || !b) {
         setCompareSummary('版本資料不存在。');
         return;
@@ -1086,7 +1400,7 @@ export default function App() {
     } catch (err) {
       setCompareSummary(`比較失敗：${(err as Error).message}`);
     }
-  }, [activeDraftId, compareVersionA, compareVersionB]);
+  }, [activeDraftId, compareVersionA, compareVersionB, authUser, apiClient]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -2883,6 +3197,73 @@ export default function App() {
           <p className="subtitle">拼豆格線圖轉換 MVP</p>
         </div>
         <div className="top-actions">
+          {authUser ? (
+            <>
+              <span className="hint">身份：{authUser.username}（{authUser.role}）</span>
+              <button className="ghost" onClick={logout}>
+                登出
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="ghost"
+                onClick={() => {
+                  setAuthPanelOpen((v) => !v);
+                  setLoginErrorText('');
+                }}
+                disabled={authBusy}
+              >
+                {authBusy ? '登入中...' : authPanelOpen ? '收合登入' : '登入'}
+              </button>
+              {authPanelOpen && (
+                <form
+                  className="auth-panel"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void loginByForm();
+                  }}
+                >
+                  <label>
+                    帳號
+                    <input
+                      type="text"
+                      value={loginUsername}
+                      onChange={(e) => setLoginUsername(e.target.value)}
+                      placeholder="member / pro / admin"
+                      autoComplete="username"
+                    />
+                  </label>
+                  <label>
+                    密碼
+                    <input
+                      type="password"
+                      value={loginPassword}
+                      onChange={(e) => setLoginPassword(e.target.value)}
+                      placeholder="請輸入密碼"
+                      autoComplete="current-password"
+                    />
+                  </label>
+                  {loginErrorText ? <p className="status error">{loginErrorText}</p> : null}
+                  <div className="row two">
+                    <button type="submit" className="primary" disabled={authBusy}>
+                      {authBusy ? '登入中...' : '登入'}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost"
+                      onClick={() => {
+                        setAuthPanelOpen(false);
+                        setLoginErrorText('');
+                      }}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </form>
+              )}
+            </>
+          )}
           <button className="ghost" onClick={() => navigatePage(page === 'palette' ? 'main' : 'palette')}>
             {page === 'palette' ? '返回轉換頁' : '前往色庫管理'}
           </button>
@@ -3161,8 +3542,17 @@ export default function App() {
 
           <div className="draft-box">
             <div className="draft-box-head">
-              <strong>本地草稿（未登入上限 {getDraftLimit()}）</strong>
-              <span>{lastSavedAt ? `最後儲存：${formatLocalTime(lastSavedAt)}` : '尚未儲存'} | 佔用：{storageEstimateText}</span>
+              <strong>
+                {!authUser
+                  ? `本地草稿（未登入上限 ${getDraftLimit()}）`
+                  : getCloudDraftLimit(authUser) != null
+                    ? `雲端草稿（一般版登入上限 ${getCloudDraftLimit(authUser)}）`
+                    : '雲端草稿（Pro / Admin）'}
+              </strong>
+              <span>
+                {lastSavedAt ? `最後儲存：${formatLocalTime(lastSavedAt)}` : '尚未儲存'}
+                {!authUser ? ` | 佔用：${storageEstimateText}` : ''}
+              </span>
             </div>
             <label>
               草稿清單
@@ -4305,7 +4695,7 @@ export default function App() {
                   <th>色號</th>
                   <th>顆數</th>
                   <th>佔比</th>
-                  <th>成本</th>
+                  {proMode && <th>成本</th>}
                 </tr>
               </thead>
               <tbody>
@@ -4317,7 +4707,7 @@ export default function App() {
                     </td>
                     <td>{r.count}</td>
                     <td>{r.ratio.toFixed(2)}%</td>
-                    <td>{r.lineCost.toFixed(2)}</td>
+                    {proMode && <td>{r.lineCost.toFixed(2)}</td>}
                   </tr>
                 ))}
               </tbody>
