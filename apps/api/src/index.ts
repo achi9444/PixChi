@@ -57,6 +57,10 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
     sendApiError(res, 413, 'PAYLOAD_TOO_LARGE', 'Payload too large', { limit: config.jsonBodyLimit });
     return;
   }
+  if (typeof err === 'object' && err && 'type' in err && (err as any).type === 'entity.parse.failed') {
+    sendApiError(res, 400, 'INVALID_JSON', 'Invalid JSON body');
+    return;
+  }
   sendApiError(res, 500, 'INTERNAL_SERVER_ERROR', 'Internal Server Error');
 });
 
