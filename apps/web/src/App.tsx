@@ -136,6 +136,9 @@ const SHORTCUT_LABELS: Record<keyof typeof SHORTCUTS, string> = {
 const ASSET_BASE_URL = import.meta.env.BASE_URL;
 const PDF_FONT_URL = `${ASSET_BASE_URL}fonts/NotoSansTC-VF.ttf`;
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:8787';
+const LOCAL_PALETTE_FALLBACK =
+  (import.meta.env.VITE_LOCAL_PALETTE_FALLBACK ?? '').trim().toLowerCase() !== 'off';
+const LOCAL_PALETTE_URL = `${ASSET_BASE_URL}color-palette.json`;
 let pdfRuntimePromise: Promise<{
   PDFDocument: any;
   StandardFonts: any;
@@ -984,6 +987,17 @@ export default function App() {
       }));
     };
 
+    const loadPaletteFromLocal = async () => {
+      const res = await fetch(LOCAL_PALETTE_URL, { cache: 'no-cache' });
+      if (!res.ok) throw new Error(`本地色庫讀取失敗 (${res.status})`);
+      const data = (await res.json()) as { groups?: Array<{ name: string; colors?: Array<{ name?: string; hex?: string }> }> };
+      const groupsRaw = Array.isArray(data.groups) ? data.groups : [];
+      const parsed = parseGroups(groupsRaw);
+      if (!parsed.length) throw new Error('本地色庫沒有可用群組');
+      setBuiltinGroups(parsed);
+      setStatusText(`色庫載入完成（本地），內建群組數：${parsed.length}`);
+    };
+
     try {
       const summaryData = await apiClient.getPaletteGroups();
       const summaries = summaryData.groups ?? [];
@@ -1001,7 +1015,16 @@ export default function App() {
       setBuiltinGroups(parsed);
       setStatusText(`色庫載入完成（API），內建群組數：${parsed.length}`);
     } catch (err) {
-      setStatusText(`無法載入色庫（API）：${(err as Error).message}`);
+      const apiMsg = `無法載入色庫（API）：${(err as Error).message}`;
+      if (!LOCAL_PALETTE_FALLBACK) {
+        setStatusText(apiMsg);
+        return;
+      }
+      try {
+        await loadPaletteFromLocal();
+      } catch (localErr) {
+        setStatusText(`${apiMsg}；本地色庫也失敗：${(localErr as Error).message}`);
+      }
     }
   }, [apiClient]);
 
