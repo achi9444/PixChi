@@ -1,4 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AuthPanel from './components/AuthPanel';
 import { PUBLIC_PRICING_PRESET, COMPLEXITY_CAP_TIERS } from './config/pricing';
 import { SHORTCUTS } from './config/shortcuts';
 import { createDraft, deleteDraft, getDraftLimit, getDraftSnapshot, listDrafts, renameDraft, setDraftVersionNote, updateDraft, type DraftSnapshot, type DraftSummary } from './services/draftStore';
@@ -3220,73 +3221,26 @@ export default function App() {
           <p className="subtitle">拼豆格線圖轉換 MVP</p>
         </div>
         <div className="top-actions">
-          {authUser ? (
-            <>
-              <span className="hint">身份：{authUser.username}（{authUser.role}）</span>
-              <button className="ghost" onClick={logout}>
-                登出
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className="ghost"
-                onClick={() => {
-                  setAuthPanelOpen((v) => !v);
-                  setLoginErrorText('');
-                }}
-                disabled={authBusy}
-              >
-                {authBusy ? '登入中...' : authPanelOpen ? '收合登入' : '登入'}
-              </button>
-              {authPanelOpen && (
-                <form
-                  className="auth-panel"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void loginByForm();
-                  }}
-                >
-                  <label>
-                    帳號
-                    <input
-                      type="text"
-                      value={loginUsername}
-                      onChange={(e) => setLoginUsername(e.target.value)}
-                      placeholder="member / pro / admin"
-                      autoComplete="username"
-                    />
-                  </label>
-                  <label>
-                    密碼
-                    <input
-                      type="password"
-                      value={loginPassword}
-                      onChange={(e) => setLoginPassword(e.target.value)}
-                      placeholder="請輸入密碼"
-                      autoComplete="current-password"
-                    />
-                  </label>
-                  {loginErrorText ? <p className="status error">{loginErrorText}</p> : null}
-                  <div className="row two">
-                    <button type="submit" className="primary" disabled={authBusy}>
-                      {authBusy ? '登入中...' : '登入'}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => {
-                        setAuthPanelOpen(false);
-                        setLoginErrorText('');
-                      }}
-                    >
-                      取消
-                    </button>
-                  </div>
-                </form>
-              )}
-            </>
-          )}
+          <AuthPanel
+            authUser={authUser}
+            authBusy={authBusy}
+            authPanelOpen={authPanelOpen}
+            loginUsername={loginUsername}
+            loginPassword={loginPassword}
+            loginErrorText={loginErrorText}
+            onTogglePanel={() => {
+              setAuthPanelOpen((v) => !v);
+              setLoginErrorText('');
+            }}
+            onLogin={() => void loginByForm()}
+            onLogout={() => void logout()}
+            onUsernameChange={setLoginUsername}
+            onPasswordChange={setLoginPassword}
+            onClosePanel={() => {
+              setAuthPanelOpen(false);
+              setLoginErrorText('');
+            }}
+          />
           <button className="ghost" onClick={() => navigatePage(page === 'palette' ? 'main' : 'palette')}>
             {page === 'palette' ? '返回轉換頁' : '前往色庫管理'}
           </button>
