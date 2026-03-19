@@ -1,5 +1,5 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import AuthPanel from './components/AuthPanel';
+import TopBar from './components/TopBar';
 import { PUBLIC_PRICING_PRESET, COMPLEXITY_CAP_TIERS } from './config/pricing';
 import { SHORTCUTS } from './config/shortcuts';
 import { createDraft, deleteDraft, getDraftLimit, getDraftSnapshot, listDrafts, renameDraft, setDraftVersionNote, updateDraft, type DraftSnapshot, type DraftSummary } from './services/draftStore';
@@ -290,7 +290,6 @@ export default function App() {
   const focusColorMenuRef = useRef<HTMLDivElement | null>(null);
   const constructionListRef = useRef<HTMLDivElement | null>(null);
   const constructionItemRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const pdfImportRef = useRef<HTMLInputElement | null>(null);
   const renderMetaRef = useRef({ ox: 0, oy: 0, cell: 1, viewStartCol: 0, viewStartRow: 0, viewCols: 1, viewRows: 1 });
   const imagePreviewMetaRef = useRef({ ox: 0, oy: 0, scale: 1, drawW: 0, drawH: 0 });
   const isPointerDownRef = useRef(false);
@@ -3015,7 +3014,6 @@ export default function App() {
       setStatusText(`PDF 匯入失敗：${(err as Error).message}`);
     } finally {
       setIsPdfBusy(false);
-      if (pdfImportRef.current) pdfImportRef.current.value = '';
     }
   };
 
@@ -3215,69 +3213,34 @@ export default function App() {
 
   return (
     <>
-      <header className="topbar">
-        <div>
-          <h1>PixChi</h1>
-          <p className="subtitle">拼豆格線圖轉換 MVP</p>
-        </div>
-        <div className="top-actions">
-          <AuthPanel
-            authUser={authUser}
-            authBusy={authBusy}
-            authPanelOpen={authPanelOpen}
-            loginUsername={loginUsername}
-            loginPassword={loginPassword}
-            loginErrorText={loginErrorText}
-            onTogglePanel={() => {
-              setAuthPanelOpen((v) => !v);
-              setLoginErrorText('');
-            }}
-            onLogin={() => void loginByForm()}
-            onLogout={() => void logout()}
-            onUsernameChange={setLoginUsername}
-            onPasswordChange={setLoginPassword}
-            onClosePanel={() => {
-              setAuthPanelOpen(false);
-              setLoginErrorText('');
-            }}
-          />
-          <button className="ghost" onClick={() => navigatePage(page === 'palette' ? 'main' : 'palette')}>
-            {page === 'palette' ? '返回轉換頁' : '前往色庫管理'}
-          </button>
-          {page === 'main' && (
-            <>
-              {proMode && (
-                <button className="ghost" onClick={() => void loadPalette()}>
-                  重新載入色庫
-                </button>
-              )}
-              <button onClick={exportCsv} disabled={isPdfBusy}>
-                匯出 Material CSV
-              </button>
-              {proMode && (
-                <>
-                  <input
-                    ref={pdfImportRef}
-                    type="file"
-                    accept="application/pdf"
-                    style={{ display: 'none' }}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0] ?? null;
-                      void importPdfRestore(file);
-                    }}
-                  />
-                  <button className="ghost" onClick={() => pdfImportRef.current?.click()} disabled={isPdfBusy}>
-                    匯入 PDF 還原
-                  </button>
-                </>
-              )}
-              <button className="primary" onClick={() => void exportPdfLike()} disabled={isPdfBusy}>
-                {isPdfBusy ? '處理中...' : '匯出 Pattern PDF'}
-              </button>
-            </>
-          )}
-        </div>
-      </header>
+      <TopBar
+        authUser={authUser}
+        authBusy={authBusy}
+        authPanelOpen={authPanelOpen}
+        loginUsername={loginUsername}
+        loginPassword={loginPassword}
+        loginErrorText={loginErrorText}
+        onToggleAuthPanel={() => {
+          setAuthPanelOpen((v) => !v);
+          setLoginErrorText('');
+        }}
+        onLogin={() => void loginByForm()}
+        onLogout={() => void logout()}
+        onUsernameChange={setLoginUsername}
+        onPasswordChange={setLoginPassword}
+        onCloseAuthPanel={() => {
+          setAuthPanelOpen(false);
+          setLoginErrorText('');
+        }}
+        page={page}
+        onNavigate={navigatePage}
+        proMode={proMode}
+        isPdfBusy={isPdfBusy}
+        onReloadPalette={() => void loadPalette()}
+        onExportCsv={exportCsv}
+        onImportPdfFile={(file) => void importPdfRestore(file)}
+        onExportPdf={() => void exportPdfLike()}
+      />
       {page === 'palette' ? (
         <main className="layout palette-layout">
           <section className="panel controls">
