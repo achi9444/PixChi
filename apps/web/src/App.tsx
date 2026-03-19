@@ -1,5 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import TopBar from './components/TopBar';
+import PalettePage from './components/PalettePage';
 import { PUBLIC_PRICING_PRESET, COMPLEXITY_CAP_TIERS } from './config/pricing';
 import { SHORTCUTS } from './config/shortcuts';
 import { createDraft, deleteDraft, getDraftLimit, getDraftSnapshot, listDrafts, renameDraft, setDraftVersionNote, updateDraft, type DraftSnapshot, type DraftSummary } from './services/draftStore';
@@ -321,8 +322,6 @@ export default function App() {
   const [paletteEditGroupId, setPaletteEditGroupId] = useState('');
   const [paletteNewColorName, setPaletteNewColorName] = useState('');
   const [paletteNewColorHex, setPaletteNewColorHex] = useState('#ffffff');
-  const [customEditColorIndex, setCustomEditColorIndex] = useState<number | null>(null);
-  const [customEditColorHex, setCustomEditColorHex] = useState('#ffffff');
   const [imageBitmap, setImageBitmap] = useState<ImageBitmap | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageMeta, setImageMeta] = useState('-');
@@ -1098,22 +1097,6 @@ export default function App() {
     setPaletteEditGroupId(customPaletteGroups[0]?.id ?? '');
   }, [customPaletteGroups, paletteEditGroupId]);
 
-  useEffect(() => {
-    if (!editablePaletteGroup || customEditColorIndex == null) {
-      setCustomEditColorIndex(null);
-      return;
-    }
-    const c = editablePaletteGroup.colors[customEditColorIndex];
-    if (!c) {
-      setCustomEditColorIndex(null);
-      return;
-    }
-    setCustomEditColorHex(normalizeColorHex(c.hex).toLowerCase());
-  }, [editablePaletteGroup, customEditColorIndex]);
-
-  const customEditRgb = useMemo(() => {
-    return hexToRgb(normalizeColorHex(customEditColorHex));
-  }, [customEditColorHex]);
 
   useEffect(() => {
     const run = async () => {
@@ -3153,19 +3136,6 @@ export default function App() {
     );
   };
 
-  const applyCustomEditHex = () => {
-    if (customEditColorIndex == null) return;
-    const hex = normalizeColorHex(customEditColorHex);
-    updateColorInCustomGroup(customEditColorIndex, { hex });
-    setCustomEditColorHex(hex.toLowerCase());
-  };
-
-  const setCustomEditRgbChannel = (channel: 0 | 1 | 2, value: string) => {
-    const v = clampByte(Number(value));
-    const next: [number, number, number] = [...customEditRgb] as [number, number, number];
-    next[channel] = v;
-    setCustomEditColorHex(rgbToHex(next[0], next[1], next[2]).toLowerCase());
-  };
 
   const exportCustomPaletteJson = () => {
     if (!proMode) return;
@@ -3242,234 +3212,34 @@ export default function App() {
         onExportPdf={() => void exportPdfLike()}
       />
       {page === 'palette' ? (
-        <main className="layout palette-layout">
-          <section className="panel controls">
-            <h2>色庫管理</h2>
-            <p className="hint">可複製現有群組建立自訂色庫，並編輯色號。一般版不提供匯入/匯出。</p>
-            <div className="row two">
-              <button type="button" className={paletteTab === 'builtin' ? 'primary' : 'ghost'} onClick={() => setPaletteTab('builtin')}>
-                原有色庫
-              </button>
-              <button type="button" className={paletteTab === 'custom' ? 'primary' : 'ghost'} onClick={() => setPaletteTab('custom')}>
-                自訂色庫
-              </button>
-            </div>
-            {paletteTab === 'builtin' ? (
-              <>
-                <p className="hint">請在右側卡片點選要預覽的群組，進入後可複製到自訂色庫。</p>
-                <label>
-                  新群組名稱（可選）
-                  <input type="text" value={paletteNewGroupName} onChange={(e) => setPaletteNewGroupName(e.target.value)} placeholder="留空會自動命名" />
-                </label>
-              </>
-            ) : (
-              <>
-                <div className="row one">
-                  <button type="button" className="ghost" onClick={() => createCustomGroup(null)}>
-                    新建空白色庫
-                  </button>
-                </div>
-                <p className="hint">請在右側卡片點選要編輯的自訂群組，進入後可直接點色票改色。</p>
-                {editablePaletteGroup && (
-                  <>
-                    <div className="row three">
-                      <input type="text" value={paletteNewGroupName} onChange={(e) => setPaletteNewGroupName(e.target.value)} />
-                      <button type="button" className="ghost" onClick={updateCustomGroupName}>更新群組名</button>
-                      <button type="button" className="ghost" onClick={deleteCustomGroup}>刪除群組</button>
-                    </div>
-                    <div className="row three">
-                      <input type="text" placeholder="色號名稱" value={paletteNewColorName} onChange={(e) => setPaletteNewColorName(e.target.value)} />
-                      <input type="color" value={normalizeColorHex(paletteNewColorHex).toLowerCase()} onChange={(e) => setPaletteNewColorHex(e.target.value)} />
-                      <button type="button" className="ghost" onClick={addColorToCustomGroup}>新增色號</button>
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-            {proMode && (
-              <div className="row two">
-                <button type="button" className="ghost" onClick={exportCustomPaletteJson}>
-                  匯出自訂色庫
-                </button>
-                <label>
-                  匯入自訂色庫
-                  <input
-                    type="file"
-                    accept="application/json"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0] ?? null;
-                      void importCustomPaletteJson(file);
-                      e.currentTarget.value = '';
-                    }}
-                  />
-                </label>
-              </div>
-            )}
-            <p className="status">{statusText}</p>
-          </section>
-          <section className="panel stats">
-            <h2>{paletteTab === 'builtin' ? '原有色庫總覽' : '自訂色號明細'}</h2>
-            {paletteTab === 'builtin' ? (
-              <div className="palette-library">
-                <div className="palette-group-grid">
-                  {builtinGroups.map((g) => (
-                    <button
-                      type="button"
-                      key={`builtin-card-${g.name}`}
-                      className={`palette-group-card ${builtinPreviewGroupName === g.name ? 'active' : ''}`.trim()}
-                      onClick={() => setBuiltinPreviewGroupName(g.name)}
-                    >
-                      <div className="palette-group-cover">
-                        {(g.colors.length ? g.colors : [{ name: '-', hex: '#FFFFFF', rgb: [255, 255, 255] as [number, number, number], lab: [100, 0, 0] as [number, number, number] }])
-                          .slice(0, 36)
-                          .map((c) => (
-                            <span key={`${g.name}-${c.name}`} style={{ background: c.hex }} />
-                          ))}
-                      </div>
-                      <div className="palette-group-meta">
-                        <strong>{g.name}</strong>
-                        <small>{g.colors.length} 色</small>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-                {builtinPreviewGroup && (
-                  <div className="palette-preview">
-                    <div className="palette-preview-head">
-                      <h3>{builtinPreviewGroup.name} 色號預覽（{builtinPreviewGroup.colors.length}）</h3>
-                      <button type="button" className="primary" onClick={() => createCustomGroup(builtinPreviewGroup)}>
-                        複製到自訂
-                      </button>
-                    </div>
-                    <div className="palette-color-grid">
-                      {builtinPreviewGroup.colors.map((c) => (
-                        <div key={`${builtinPreviewGroup.name}-${c.name}`} className="palette-color-tile">
-                          <span className="color-pill tiny" style={{ color: c.hex }} />
-                          <strong>{c.name}</strong>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : customPaletteGroups.length ? (
-              <div className="palette-library">
-                <div className="palette-group-grid">
-                  {customPaletteGroups.map((g) => (
-                    <button
-                      type="button"
-                      key={`custom-card-${g.id}`}
-                      className={`palette-group-card ${paletteEditGroupId === g.id ? 'active' : ''}`.trim()}
-                      onClick={() => setPaletteEditGroupId(g.id)}
-                    >
-                      <div className="palette-group-cover">
-                        {(g.colors.length ? g.colors : [{ name: '-', hex: '#FFFFFF' }])
-                          .slice(0, 36)
-                          .map((c) => (
-                            <span key={`${g.id}-${c.name}`} style={{ background: c.hex }} />
-                          ))}
-                      </div>
-                      <div className="palette-group-meta">
-                        <strong>{g.name}</strong>
-                        <small>{g.colors.length} 色</small>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-                {editablePaletteGroup && (
-                  <div className="palette-preview">
-                    <div className="palette-preview-head">
-                      <h3>{editablePaletteGroup.name} 色號預覽（{editablePaletteGroup.colors.length}）</h3>
-                    </div>
-                    <div className="palette-color-grid">
-                      {editablePaletteGroup.colors.map((c, idx) => (
-                        <div key={`${editablePaletteGroup.id}-${idx}`} className="palette-color-edit-cell">
-                          <button
-                            type="button"
-                            className={`palette-color-tile editable ${customEditColorIndex === idx ? 'active' : ''}`.trim()}
-                            onClick={() => {
-                              if (customEditColorIndex === idx) {
-                                setCustomEditColorIndex(null);
-                                return;
-                              }
-                              setCustomEditColorIndex(idx);
-                              setCustomEditColorHex(normalizeColorHex(c.hex).toLowerCase());
-                            }}
-                          >
-                            <span className="color-pill tiny" style={{ color: c.hex }} />
-                            <strong>{c.name}</strong>
-                          </button>
-                          {customEditColorIndex === idx && (
-                            <div className="palette-color-popover" onClick={(e) => e.stopPropagation()}>
-                              <div className="palette-color-popover-head">
-                                <strong>{c.name}</strong>
-                                <button type="button" className="ghost" onClick={() => setCustomEditColorIndex(null)}>
-                                  關閉
-                                </button>
-                              </div>
-                              <input
-                                type="color"
-                                value={normalizeColorHex(customEditColorHex).toLowerCase()}
-                                onChange={(e) => setCustomEditColorHex(e.target.value)}
-                                aria-label="選擇顏色"
-                              />
-                              <div className="row two">
-                                <input
-                                  type="text"
-                                  value={customEditColorHex.toUpperCase()}
-                                  onChange={(e) => setCustomEditColorHex(e.target.value)}
-                                  onBlur={applyCustomEditHex}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') applyCustomEditHex();
-                                  }}
-                                  placeholder="#RRGGBB"
-                                />
-                                <button type="button" className="primary" onClick={applyCustomEditHex}>
-                                  套用
-                                </button>
-                              </div>
-                              <div className="row three">
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={255}
-                                  value={customEditRgb[0]}
-                                  onChange={(e) => setCustomEditRgbChannel(0, e.target.value)}
-                                  onBlur={applyCustomEditHex}
-                                  aria-label="R"
-                                />
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={255}
-                                  value={customEditRgb[1]}
-                                  onChange={(e) => setCustomEditRgbChannel(1, e.target.value)}
-                                  onBlur={applyCustomEditHex}
-                                  aria-label="G"
-                                />
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={255}
-                                  value={customEditRgb[2]}
-                                  onChange={(e) => setCustomEditRgbChannel(2, e.target.value)}
-                                  onBlur={applyCustomEditHex}
-                                  aria-label="B"
-                                />
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <p className="hint">請先建立或選擇一個自訂群組。</p>
-            )}
-          </section>
-        </main>
+        <PalettePage
+          paletteTab={paletteTab}
+          onSetPaletteTab={setPaletteTab}
+          builtinGroups={builtinGroups}
+          customPaletteGroups={customPaletteGroups}
+          builtinPreviewGroupName={builtinPreviewGroupName}
+          builtinPreviewGroup={builtinPreviewGroup}
+          onSetBuiltinPreviewGroupName={setBuiltinPreviewGroupName}
+          paletteNewGroupName={paletteNewGroupName}
+          onSetPaletteNewGroupName={setPaletteNewGroupName}
+          paletteEditGroupId={paletteEditGroupId}
+          onSetPaletteEditGroupId={setPaletteEditGroupId}
+          editablePaletteGroup={editablePaletteGroup}
+          paletteNewColorName={paletteNewColorName}
+          onSetPaletteNewColorName={setPaletteNewColorName}
+          paletteNewColorHex={paletteNewColorHex}
+          onSetPaletteNewColorHex={setPaletteNewColorHex}
+          proMode={proMode}
+          statusText={statusText}
+          onCreateCustomGroup={createCustomGroup}
+          onUpdateCustomGroupName={updateCustomGroupName}
+          onDeleteCustomGroup={deleteCustomGroup}
+          onAddColorToCustomGroup={addColorToCustomGroup}
+          onUpdateColor={updateColorInCustomGroup}
+          onExportCustomPaletteJson={exportCustomPaletteJson}
+          onImportCustomPaletteJson={(file) => void importCustomPaletteJson(file)}
+        />
+      
       ) : (
       <main className={`layout ${isCanvasFullscreen ? 'canvas-fullscreen' : ''}`.trim()}>
         <section className="panel controls">
