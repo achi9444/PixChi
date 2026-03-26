@@ -1522,10 +1522,13 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   useEffect(() => {
     const onPointerDown = (ev: MouseEvent) => {
       const target = ev.target as Node;
-      if (colorMenuRef.current && !colorMenuRef.current.contains(target)) {
+      // Portal dropdowns render outside the ref — skip close if clicking inside one
+      const inPortal = (target instanceof HTMLElement || target instanceof SVGElement)
+        && target.closest('.color-select-menu-portal');
+      if (colorMenuRef.current && !colorMenuRef.current.contains(target) && !inPortal) {
         setEditColorMenuOpen(false);
       }
-      if (focusColorMenuRef.current && !focusColorMenuRef.current.contains(target)) {
+      if (focusColorMenuRef.current && !focusColorMenuRef.current.contains(target) && !inPortal) {
         setFocusColorMenuOpen(false);
       }
     };
@@ -1793,11 +1796,11 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     const hover = hoverCellRef.current;
     if (hover && converted && (editTool === 'paint' || editTool === 'erase')) {
       const meta = renderMetaRef.current;
-      const half = Math.floor(brushSize / 2);
+      const half = Math.floor((brushSize - 1) / 2);
       const startCol = Math.max(0, hover.col - half);
       const startRow = Math.max(0, hover.row - half);
-      const endCol = Math.min(converted.cols - 1, hover.col + brushSize - 1 - half);
-      const endRow = Math.min(converted.rows - 1, hover.row + brushSize - 1 - half);
+      const endCol = Math.min(converted.cols - 1, hover.col - half + brushSize - 1);
+      const endRow = Math.min(converted.rows - 1, hover.row - half + brushSize - 1);
       const px = meta.ox + (startCol - meta.viewStartCol) * meta.cell;
       const py = meta.oy + (startRow - meta.viewStartRow) * meta.cell;
       const pw = (endCol - startCol + 1) * meta.cell;
