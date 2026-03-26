@@ -6,6 +6,7 @@ import { prisma } from '../db.js';
 import type { AuthTokens, AuthUser, JwtClaims, UserRole } from '../types/auth.js';
 
 const VALID_ROLES: UserRole[] = ['guest', 'member', 'pro', 'admin'];
+const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
 
 function parseRole(input: string): UserRole {
   return VALID_ROLES.includes(input as UserRole) ? (input as UserRole) : 'member';
@@ -27,6 +28,19 @@ function createAccessToken(user: AuthUser): string {
   };
   const options: SignOptions = { expiresIn: config.jwtExpire as SignOptions['expiresIn'] };
   return jwt.sign(claims, config.jwtSecret, options);
+}
+
+export async function registerUser(username: string, password: string): Promise<AuthUser | 'USERNAME_TAKEN' | 'INVALID_USERNAME' | 'WEAK_PASSWORD'> {
+  const normalized = username.trim().toLowerCase();
+  if (!USERNAME_RE.test(normalized)) return 'INVALID_USERNAME';
+  if (password.length < 6) return 'WEAK_PASSWORD';
+  const existing = await prisma.user.findUnique({ where: { username: normalized } });
+  if (existing) return 'USERNAME_TAKEN';
+  const passwordHash = await bcrypt.hash(password, 10);
+  const user = await prisma.user.create({
+    data: { username: normalized, passwordHash, role: 'member' }
+  });
+  return { id: user.id, username: user.username, role: 'member' };
 }
 
 export async function loginWithPassword(username: string, password: string): Promise<AuthUser | null> {

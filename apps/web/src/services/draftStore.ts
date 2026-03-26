@@ -3,7 +3,7 @@ export type DraftSnapshot = {
   activeGroupName: string;
   cols: number;
   rows: number;
-  mode: 'fit' | 'lock' | 'pad';
+  mode: string;
   strategy: 'lab_nearest' | 'rgb_nearest';
   preMergeDeltaE?: number;
   showCode: boolean;

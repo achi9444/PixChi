@@ -1,5 +1,12 @@
 export type AuthRole = 'guest' | 'member' | 'pro' | 'admin';
 
+export const ROLE_LABEL: Record<AuthRole, string> = {
+  guest: '路人',
+  member: '會員',
+  pro: '創作者',
+  admin: '管理員',
+};
+
 export type AuthUser = {
   id: string;
   username: string;
@@ -49,6 +56,47 @@ export type CustomPaletteGroupDto = {
 export type UserSettingsDto = {
   shortcutConfig?: Record<string, string[]>;
   constructionTemplates?: unknown[];
+};
+
+export type DesignDto = {
+  id: string;
+  title: string;
+  description?: string | null;
+  tags: string[];
+  licenseType: 'personal' | 'commercial';
+  price?: number | null;
+  estimatedTime?: string | null;
+  previewImage?: string | null;
+  status?: 'draft' | 'published';
+  updatedAt: number;
+  creator?: { username: string; acceptingOrders: boolean };
+};
+
+export type ExternalLink = { label: string; url: string };
+
+export type CreatorProfileDto = {
+  bio?: string | null;
+  styleTags: string[];
+  externalLinks: ExternalLink[];
+  acceptingOrders: boolean;
+  watermarkText?: string;
+  designCount?: number;
+};
+
+export type MarketCreatorDto = CreatorProfileDto & { username: string; designs?: DesignDto[] };
+
+export type MarketDesignsResult = {
+  designs: DesignDto[];
+  total: number;
+  page: number;
+  totalPages: number;
+};
+
+export type MarketCreatorsResult = {
+  creators: MarketCreatorDto[];
+  total: number;
+  page: number;
+  totalPages: number;
 };
 
 export type ApiClientOptions = {
@@ -159,6 +207,23 @@ export class ApiClient {
     throw new Error(first.errorCode ? `${first.errorCode}: ${first.error || ''}` : first.error || `HTTP ${first.status}`);
   }
 
+  register(username: string, password: string) {
+    return this.fetchJson<AuthLoginResponse>(
+      '/api/auth/register',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      },
+      false
+    ).then((res) => {
+      if ((res.status !== 200 && res.status !== 201) || !res.data) {
+        throw new Error(res.errorCode ? `${res.errorCode}: ${res.error || ''}` : res.error || `HTTP ${res.status}`);
+      }
+      return res.data;
+    });
+  }
+
   login(username: string, password: string) {
     return this.fetchJson<AuthLoginResponse>(
       '/api/auth/login',
@@ -245,6 +310,72 @@ export class ApiClient {
 
   deleteProject(projectId: string) {
     return this.requestJson<{ ok?: boolean }>(`/api/projects/${encodeURIComponent(projectId)}`, {
+      method: 'DELETE'
+    });
+  }
+
+  // ─── Market ───────────────────────────────────────────────
+
+  getMarketDesigns(params?: { page?: number; limit?: number; q?: string; license?: 'personal' | 'commercial' }) {
+    const qs = new URLSearchParams();
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.q) qs.set('q', params.q);
+    if (params?.license) qs.set('license', params.license);
+    const query = qs.toString();
+    return this.requestJson<MarketDesignsResult>(`/api/market/designs${query ? '?' + query : ''}`, { cache: 'no-cache' });
+  }
+
+  getMarketCreators(params?: { page?: number; limit?: number; q?: string; accepting?: boolean }) {
+    const qs = new URLSearchParams();
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.limit) qs.set('limit', String(params.limit));
+    if (params?.q) qs.set('q', params.q);
+    if (params?.accepting !== undefined) qs.set('accepting', String(params.accepting));
+    const query = qs.toString();
+    return this.requestJson<MarketCreatorsResult>(`/api/market/creators${query ? '?' + query : ''}`, { cache: 'no-cache' });
+  }
+
+  getMarketCreatorProfile(username: string) {
+    return this.requestJson<MarketCreatorDto>(`/api/market/creators/${encodeURIComponent(username)}`, { cache: 'no-cache' });
+  }
+
+  // ─── Creator (pro only) ───────────────────────────────────
+
+  getCreatorProfile() {
+    return this.requestJson<CreatorProfileDto>('/api/creator/profile', { cache: 'no-cache' });
+  }
+
+  putCreatorProfile(data: Partial<Pick<CreatorProfileDto, 'bio' | 'styleTags' | 'externalLinks' | 'acceptingOrders' | 'watermarkText'>>) {
+    return this.requestJson<{ ok?: boolean }>('/api/creator/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+  }
+
+  getCreatorDesigns() {
+    return this.requestJson<{ designs: DesignDto[] }>('/api/creator/designs', { cache: 'no-cache' });
+  }
+
+  createDesign(data: Omit<DesignDto, 'id' | 'updatedAt' | 'creator'>) {
+    return this.requestJson<{ id: string }>('/api/creator/designs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+  }
+
+  updateDesign(id: string, data: Partial<Omit<DesignDto, 'id' | 'updatedAt' | 'creator'>>) {
+    return this.requestJson<{ ok?: boolean }>(`/api/creator/designs/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+  }
+
+  deleteDesign(id: string) {
+    return this.requestJson<{ ok?: boolean }>(`/api/creator/designs/${encodeURIComponent(id)}`, {
       method: 'DELETE'
     });
   }

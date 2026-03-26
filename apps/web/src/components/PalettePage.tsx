@@ -1,19 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CustomPaletteColor, CustomPaletteGroup } from '../services/customPaletteStore';
-
-// ---- local types ----
-type PaletteColor = {
-  name: string;
-  hex: string;
-  rgb: [number, number, number];
-  lab: [number, number, number];
-};
-type PaletteGroup = {
-  id?: string;
-  isCustom?: boolean;
-  name: string;
-  colors: PaletteColor[];
-};
+import type { PaletteColor, PaletteGroup } from '../types/palette';
 
 // ---- color utilities ----
 function normalizeColorHex(input: string) {
@@ -116,7 +103,11 @@ export default function PalettePage({
     <main className="layout palette-layout">
       <section className="panel controls">
         <h2>色庫管理</h2>
-        <p className="hint">可複製現有群組建立自訂色庫，並編輯色號。一般版不提供匯入/匯出。</p>
+        <p className="hint">
+          {proMode
+            ? '可複製現有群組建立自訂色庫，並編輯色號。支援匯入/匯出 JSON。'
+            : '可複製現有群組建立自訂色庫，並編輯色號。升級 Pro 可匯入/匯出。'}
+        </p>
         <div className="row two">
           <button type="button" className={paletteTab === 'builtin' ? 'primary' : 'ghost'} onClick={() => onSetPaletteTab('builtin')}>
             原有色庫
@@ -255,7 +246,7 @@ export default function PalettePage({
                 </div>
                 <div className="palette-color-grid">
                   {editablePaletteGroup.colors.map((c, idx) => (
-                    <div key={`${editablePaletteGroup.id}-${idx}`} className="palette-color-edit-cell">
+                    <div key={`${editablePaletteGroup.id}-${c.name}-${idx}`} className="palette-color-edit-cell">
                       <button
                         type="button"
                         className={`palette-color-tile editable ${customEditColorIndex === idx ? 'active' : ''}`.trim()}

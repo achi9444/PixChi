@@ -9,6 +9,8 @@ import { healthRouter } from './routes/health.js';
 import { paletteRouter } from './routes/palette.js';
 import { projectsRouter } from './routes/projects.js';
 import { userSettingsRouter } from './routes/userSettings.js';
+import { marketRouter } from './routes/market.js';
+import { creatorRouter } from './routes/creator.js';
 import { sendApiError } from './utils/apiError.js';
 
 const app = express();
@@ -40,6 +42,8 @@ app.use('/api/palette', paletteRouter);
 app.use('/api/projects', projectsRouter);
 app.use('/api/custom-palettes', customPalettesRouter);
 app.use('/api/user-settings', userSettingsRouter);
+app.use('/api/market', marketRouter);
+app.use('/api/creator', creatorRouter);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
