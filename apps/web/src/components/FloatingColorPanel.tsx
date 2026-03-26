@@ -1,4 +1,5 @@
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 
 export const EMPTY_EDIT_COLOR_NAME = '__EMPTY__';
 export const EMPTY_EDIT_COLOR = { name: '無', hex: '#FFFFFF' };
@@ -40,6 +41,34 @@ type FloatingColorPanelProps = {
 };
 
 const DEFAULT_POS = { x: 300, y: 80 };
+const DEFAULT_SIZE = { w: 256, h: 360 };
+const MIN_W = 220, MAX_W = 400, MIN_H = 200;
+
+/** Renders a dropdown menu via portal so it escapes overflow containers */
+function PortalDropdown({ anchorRef, children }: { anchorRef: React.RefObject<HTMLElement | null>; children: React.ReactNode }) {
+  const [style, setStyle] = useState<React.CSSProperties>({ position: 'fixed', opacity: 0 });
+
+  useLayoutEffect(() => {
+    if (!anchorRef.current) return;
+    const rect = anchorRef.current.getBoundingClientRect();
+    const maxH = window.innerHeight - rect.bottom - 8;
+    setStyle({
+      position: 'fixed',
+      top: rect.bottom + 4,
+      left: rect.left,
+      width: rect.width,
+      maxHeight: Math.min(220, Math.max(maxH, 120)),
+      opacity: 1,
+    });
+  }, [anchorRef]);
+
+  return createPortal(
+    <div className="color-select-menu color-select-menu-portal" style={style}>
+      {children}
+    </div>,
+    document.body,
+  );
+}
 
 export default function FloatingColorPanel({
   visible,
@@ -71,16 +100,45 @@ export default function FloatingColorPanel({
   onAddOneCellOutline,
 }: FloatingColorPanelProps) {
   const [pos, setPos] = useState(DEFAULT_POS);
+  const [size, setSize] = useState(DEFAULT_SIZE);
   const [minimized, setMinimized] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
+  const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const focusTriggerRef = useRef<HTMLDivElement | null>(null);
+  const editTriggerRef = useRef<HTMLDivElement | null>(null);
 
-  // Reset position on close
+  // Reset position & size on close
   const handleClose = useCallback(() => {
     onClose();
     setPos(DEFAULT_POS);
+    setSize(DEFAULT_SIZE);
     setMinimized(false);
   }, [onClose]);
+
+  // Resize handling
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    resizeRef.current = { startX: e.clientX, startY: e.clientY, startW: size.w, startH: size.h };
+    const onMove = (ev: MouseEvent) => {
+      if (!resizeRef.current) return;
+      const dw = ev.clientX - resizeRef.current.startX;
+      const dh = ev.clientY - resizeRef.current.startY;
+      const maxH = window.innerHeight * 0.8;
+      setSize({
+        w: Math.max(MIN_W, Math.min(MAX_W, resizeRef.current.startW + dw)),
+        h: Math.max(MIN_H, Math.min(maxH, resizeRef.current.startH + dh)),
+      });
+    };
+    const onUp = () => {
+      resizeRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [size]);
 
   // Drag handling
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -138,7 +196,7 @@ export default function FloatingColorPanel({
   }
 
   return (
-    <div className="floating-panel" ref={panelRef} style={{ left: pos.x, top: pos.y }}>
+    <div className="floating-panel" ref={panelRef} style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}>
       {/* Title bar — draggable */}
       <div className="floating-panel-titlebar" onMouseDown={onDragStart}>
         <span className="floating-panel-title">修色面板</span>
@@ -161,7 +219,7 @@ export default function FloatingColorPanel({
             {selectedFocusColor && <span className="color-pill tiny" style={{ color: selectedFocusColor.hex }} />}
           </span>
           <div className="color-select" ref={focusColorMenuRef}>
-            <div className="color-select-trigger-input">
+            <div className="color-select-trigger-input" ref={focusTriggerRef}>
               <input
                 type="text"
                 placeholder={constructionMode ? '施工模式焦點由任務決定' : '搜尋焦點色...'}
@@ -189,7 +247,7 @@ export default function FloatingColorPanel({
               <button type="button" className="ghost color-select-toggle" onClick={() => onFocusColorMenuOpenChange((v) => !v)}>▾</button>
             </div>
             {focusColorMenuOpen && (
-              <div className="color-select-menu">
+              <PortalDropdown anchorRef={focusTriggerRef}>
                 <button type="button" className="color-select-option clear-option" onClick={() => {
                   if (constructionMode) onClearConstructionFocus();
                   else onFocusColorNameChange('');
@@ -201,7 +259,7 @@ export default function FloatingColorPanel({
                     <span>{c.name}</span>
                   </button>
                 ))}
-              </div>
+              </PortalDropdown>
             )}
           </div>
         </label>
@@ -226,7 +284,7 @@ export default function FloatingColorPanel({
             {selectedEditColor && <span className="color-pill tiny" style={{ color: selectedEditColor.hex }} />}
           </span>
           <div className="color-select" ref={colorMenuRef}>
-            <div className="color-select-trigger-input">
+            <div className="color-select-trigger-input" ref={editTriggerRef}>
               <input
                 type="text"
                 placeholder="搜尋色號..."
@@ -251,7 +309,7 @@ export default function FloatingColorPanel({
               <button type="button" className="ghost color-select-toggle" onClick={() => onEditColorMenuOpenChange((v) => !v)}>▾</button>
             </div>
             {editColorMenuOpen && (
-              <div className="color-select-menu">
+              <PortalDropdown anchorRef={editTriggerRef}>
                 <button key={EMPTY_EDIT_COLOR_NAME} type="button" className="color-select-option" onClick={() => { onEditColorNameChange(EMPTY_EDIT_COLOR_NAME); onEditColorMenuOpenChange(false); onPaletteSearchChange(''); }}>
                   <span className="color-pill tiny" style={{ color: EMPTY_EDIT_COLOR.hex }} />
                   <span>{EMPTY_EDIT_COLOR.name}</span>
@@ -262,7 +320,7 @@ export default function FloatingColorPanel({
                     <span>{c.name}</span>
                   </button>
                 ))}
-              </div>
+              </PortalDropdown>
             )}
           </div>
         </label>
@@ -272,6 +330,8 @@ export default function FloatingColorPanel({
           <button className="ghost" onClick={onAddOneCellOutline} title="加外框（1格）">加外框</button>
         </div>
       </div>
+      {/* Resize handle */}
+      <div className="floating-panel-resize" onMouseDown={onResizeStart} />
     </div>
   );
 }

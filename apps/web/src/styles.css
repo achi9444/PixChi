@@ -2271,7 +2271,8 @@ tbody tr:hover td {
 .floating-panel {
   position: fixed;
   z-index: 500;
-  width: 256px;
+  min-width: 220px;
+  max-width: 400px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -2329,7 +2330,8 @@ tbody tr:hover td {
 .floating-panel-body {
   padding: 10px 12px 12px;
   overflow-y: auto;
-  max-height: 60vh;
+  flex: 1;
+  min-height: 0;
 }
 
 .floating-panel-body label {
@@ -2345,6 +2347,42 @@ tbody tr:hover td {
   align-items: center;
   gap: 6px;
   margin-bottom: 4px;
+}
+
+/* Portal dropdown (escapes overflow) */
+.color-select-menu-portal {
+  position: fixed;
+  z-index: 600;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Resize handle */
+.floating-panel-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  border-radius: 0 0 var(--radius-lg) 0;
+}
+.floating-panel-resize::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  opacity: 0.5;
+}
+.floating-panel-resize:hover::after {
+  opacity: 0.8;
 }
 
 /* Minimized state */
