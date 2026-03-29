@@ -27,9 +27,8 @@ type Props = {
   isPdfBusy: boolean;
   hasConverted: boolean;
   onReloadPalette: () => void;
-  onExportCsv: () => void;
   onImportPdfFile: (file: File | null) => void;
-  onExportPdf: () => void;
+  onOpenExportModal: () => void;
   onPublishToMarket: () => void;
 };
 
@@ -40,7 +39,7 @@ export default function TopBar({
   onUsernameChange, onPasswordChange, onCloseAuthPanel,
   page, onNavigate,
   proMode, isPdfBusy, hasConverted,
-  onReloadPalette, onExportCsv, onImportPdfFile, onExportPdf, onPublishToMarket,
+  onImportPdfFile, onOpenExportModal, onPublishToMarket,
 }: Props) {
   const pdfImportRef = useRef<HTMLInputElement | null>(null);
 
@@ -85,15 +84,6 @@ export default function TopBar({
         >
           市集
         </button>
-        {proMode && (
-          <button
-            className={`topbar-nav-btn ${page === 'creator' ? 'active' : ''}`}
-            onClick={() => onNavigate('creator')}
-            aria-current={page === 'creator' ? 'page' : undefined}
-          >
-            後台
-          </button>
-        )}
       </nav>
 
       {/* ── Actions (right side) ── */}
@@ -101,31 +91,6 @@ export default function TopBar({
         {/* Main page tool actions */}
         {page === 'main' && (
           <>
-            {proMode && (
-              <button
-                className="topbar-icon"
-                onClick={onReloadPalette}
-                title="重新載入色庫"
-                aria-label="重新載入色庫"
-              >
-                {/* refresh icon */}
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-                  <path d="M3 3v5h5"/>
-                </svg>
-              </button>
-            )}
-            <button
-              className="label-btn ghost"
-              onClick={onExportCsv}
-              disabled={isPdfBusy}
-              title="匯出 Material CSV"
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              CSV
-            </button>
             {proMode && (
               <>
                 <input
@@ -146,7 +111,7 @@ export default function TopBar({
                   title="匯入 PDF 還原"
                 >
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 14 12 9 17 14"/><line x1="12" y1="9" x2="12" y2="21"/>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
                   </svg>
                   匯入
                 </button>
@@ -154,9 +119,9 @@ export default function TopBar({
             )}
             <button
               className="label-btn primary"
-              onClick={onExportPdf}
+              onClick={onOpenExportModal}
               disabled={isPdfBusy}
-              title="匯出 Pattern PDF"
+              title="匯出圖紙 / 用料清單"
             >
               {isPdfBusy ? (
                 <>
@@ -170,18 +135,18 @@ export default function TopBar({
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
                   </svg>
-                  PDF
+                  匯出
                 </>
               )}
             </button>
             {proMode && hasConverted && (
               <button
-                className="label-btn primary"
+                className="label-btn ghost"
                 onClick={onPublishToMarket}
                 title="上架到市集"
               >
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                  <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>
                 </svg>
                 上架
               </button>
@@ -204,6 +169,7 @@ export default function TopBar({
           onUsernameChange={onUsernameChange}
           onPasswordChange={onPasswordChange}
           onClosePanel={onCloseAuthPanel}
+          onAvatarClick={() => onNavigate('creator')}
         />
       </div>
     </header>
