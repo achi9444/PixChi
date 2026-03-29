@@ -579,7 +579,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
   });
   const [isOpen, setIsOpen] = useState(() => {
     const stored = localStorage.getItem(STORAGE_OPEN_KEY);
-    return stored === null ? true : stored === 'true';
+    return stored === 'true';
   });
   const [statsMobileOpen, setStatsMobileOpen] = useState(false);
   const [toolParamOpen, setToolParamOpen] = useState<'paint' | 'erase' | 'bucket' | null>(null);
