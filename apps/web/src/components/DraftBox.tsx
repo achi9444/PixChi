@@ -82,14 +82,7 @@ export default function DraftBox({
   return (
     <div className="draft-box">
       <div className="draft-box-head">
-        <strong>
-          {!authUser
-            ? `本地草稿（未登入上限 ${getDraftLimit()}）`
-            : getCloudDraftLimit(authUser) != null
-              ? `雲端草稿（一般版登入上限 ${getCloudDraftLimit(authUser)}）`
-              : '雲端草稿（Pro / Admin）'}
-        </strong>
-        <span>
+        <span className="hint">
           {lastSavedAt ? `最後儲存：${formatLocalTime(lastSavedAt)}` : '尚未儲存'}
           {!authUser ? ` | 佔用：${storageEstimateText}` : ''}
         </span>

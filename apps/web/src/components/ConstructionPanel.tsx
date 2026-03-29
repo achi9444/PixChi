@@ -28,6 +28,14 @@ function formatConstructionRuleLabel(rule: Exclude<ConstructionOrderRule, 'manua
 
 type ConstructionPanelProps = {
   proMode: boolean;
+  showCode: boolean;
+  onShowCodeChange: (v: boolean) => void;
+  showRuler: boolean;
+  onShowRulerChange: (v: boolean) => void;
+  showGuide: boolean;
+  onShowGuideChange: (v: boolean) => void;
+  guideEvery: number;
+  onGuideEveryChange: (v: number) => void;
   constructionMode: boolean;
   onConstructionModeChange: (v: boolean) => void;
   constructionStrategy: 'block' | 'color';
@@ -61,6 +69,10 @@ type ConstructionPanelProps = {
 
 export default function ConstructionPanel({
   proMode,
+  showCode, onShowCodeChange,
+  showRuler, onShowRulerChange,
+  showGuide, onShowGuideChange,
+  guideEvery, onGuideEveryChange,
   constructionMode,
   onConstructionModeChange,
   constructionStrategy,
@@ -93,6 +105,26 @@ export default function ConstructionPanel({
 }: ConstructionPanelProps) {
   return (
     <div className="construction-box">
+      {/* 顯示設定 */}
+      <div className="construction-section" style={{ borderTop: 'none', marginTop: 0 }}>
+        <div className="display-toggle-row">
+          <label className="display-toggle-item">
+            色號 <input type="checkbox" checked={showCode} onChange={(e) => onShowCodeChange(e.target.checked)} />
+          </label>
+          <label className="display-toggle-item">
+            尺規 <input type="checkbox" checked={showRuler} onChange={(e) => onShowRulerChange(e.target.checked)} />
+          </label>
+          <label className="display-toggle-item">
+            參考線 <input type="checkbox" checked={showGuide} onChange={(e) => onShowGuideChange(e.target.checked)} />
+          </label>
+        </div>
+        {proMode && showGuide && (
+          <label style={{ marginTop: 6 }}>
+            參考線間距（每幾格）
+            <input type="number" min={1} max={256} value={guideEvery} onChange={(e) => onGuideEveryChange(Math.max(1, Math.floor(Number(e.target.value) || 1)))} />
+          </label>
+        )}
+      </div>
       <div className="draft-box-head">
         <strong>拼豆順序模式</strong>
         <span>完成：{constructionCompletionText}</span>
@@ -104,14 +136,14 @@ export default function ConstructionPanel({
         </label>
       </div>
       <div className="construction-section">
-        <div className="row two">
-          <label>
-            2. 任務分組
-            <select value={constructionStrategy} onChange={(e) => onConstructionStrategyChange(e.target.value as 'block' | 'color')}>
-              <option value="block">區塊優先</option>
-              <option value="color">顏色優先</option>
-            </select>
-          </label>
+        <label>
+          2. 任務分組
+          <select value={constructionStrategy} onChange={(e) => onConstructionStrategyChange(e.target.value as 'block' | 'color')}>
+            <option value="block">區塊優先</option>
+            <option value="color">顏色優先</option>
+          </select>
+        </label>
+        {constructionStrategy === 'color' && (
           <label>
             排列規則
             <select
@@ -127,7 +159,7 @@ export default function ConstructionPanel({
               {proMode && <option value="manual">手動拖曳</option>}
             </select>
           </label>
-        </div>
+        )}
         <label className="switch-row">
           已完成覆蓋色
           <input
@@ -151,18 +183,19 @@ export default function ConstructionPanel({
       )}
       {proMode && (
         <div className="construction-section">
-          <div className="row three">
-            <label>
-              3. 模板
-              <select value={constructionTemplateId} onChange={(e) => onConstructionTemplateIdChange(e.target.value)}>
-                <option value="">選擇模板</option>
-                {constructionTemplates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}（{t.strategy === 'block' ? '區塊' : '顏色'} / {t.inferredFromManual ? '手動色序' : formatConstructionRuleLabel(t.rule)}）
-                  </option>
-                ))}
-              </select>
-            </label>
+          <div className="construction-section-title">3. 排序</div>
+          <label>
+            選擇排序
+            <select value={constructionTemplateId} onChange={(e) => onConstructionTemplateIdChange(e.target.value)}>
+              <option value="">我的排序...</option>
+              {constructionTemplates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}（{t.strategy === 'block' ? '區塊' : '顏色'} / {t.inferredFromManual ? '手動色序' : formatConstructionRuleLabel(t.rule)}）
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="row two">
             <button type="button" className="primary" onClick={onApplyConstructionTemplate} disabled={!constructionTemplateId}>
               套用
             </button>
@@ -170,18 +203,19 @@ export default function ConstructionPanel({
               刪除
             </button>
           </div>
+          <hr className="panel-divider" />
           <div className="row two">
             <input
               type="text"
               value={constructionTemplateName}
               onChange={(e) => onConstructionTemplateNameChange(e.target.value)}
-              placeholder="儲存目前排序為新模板"
+              placeholder="儲存目前排序..."
             />
             <button type="button" className="ghost" onClick={onSaveConstructionTemplate}>
-              儲存目前排序
+              儲存
             </button>
           </div>
-          <div className="hint">手動拖曳時儲存模板，會自動辨識色序並可跨作品套用。</div>
+          <div className="hint">手動拖曳時儲存，可自動辨識色序並跨作品套用。</div>
         </div>
       )}
       <div className="construction-task-list" ref={constructionListRef}>
@@ -210,17 +244,20 @@ export default function ConstructionPanel({
               }}
               onClick={() => onSetFocusFromTask(task.id)}
             >
-              <label>
+              <div className="construction-task-row">
                 <input
                   type="checkbox"
                   checked={done}
-                  onChange={(e) => onToggleConstructionDone(task.id, e.target.checked)}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    onToggleConstructionDone(task.id, e.target.checked);
+                  }}
                   onClick={(e) => e.stopPropagation()}
                 />
                 <span>
                   #{idx + 1} {task.title}（{task.count}）
                 </span>
-              </label>
+              </div>
               <small>{task.subtitle}</small>
             </div>
           );

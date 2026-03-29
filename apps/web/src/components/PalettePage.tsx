@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CustomPaletteColor, CustomPaletteGroup } from '../services/customPaletteStore';
 import type { PaletteColor, PaletteGroup } from '../types/palette';
 
@@ -99,79 +99,100 @@ export default function PalettePage({
     setCustomEditColorHex(rgbToHex(next[0], next[1], next[2]).toLowerCase());
   };
 
+  const paletteImportRef = useRef<HTMLInputElement | null>(null);
+
   return (
-    <main className="layout palette-layout">
-      <section className="panel controls">
-        <h2>色庫管理</h2>
-        <p className="hint">
-          {proMode
-            ? '可複製現有群組建立自訂色庫，並編輯色號。支援匯入/匯出 JSON。'
-            : '可複製現有群組建立自訂色庫，並編輯色號。升級 Pro 可匯入/匯出。'}
-        </p>
-        <div className="row two">
-          <button type="button" className={paletteTab === 'builtin' ? 'primary' : 'ghost'} onClick={() => onSetPaletteTab('builtin')}>
-            原有色庫
-          </button>
-          <button type="button" className={paletteTab === 'custom' ? 'primary' : 'ghost'} onClick={() => onSetPaletteTab('custom')}>
-            自訂色庫
-          </button>
-        </div>
-        {paletteTab === 'builtin' ? (
-          <>
-            <p className="hint">請在右側卡片點選要預覽的群組，進入後可複製到自訂色庫。</p>
-            <label>
-              新群組名稱（可選）
-              <input type="text" value={paletteNewGroupName} onChange={(e) => onSetPaletteNewGroupName(e.target.value)} placeholder="留空會自動命名" />
-            </label>
-          </>
-        ) : (
-          <>
-            <div className="row one">
-              <button type="button" className="ghost" onClick={() => onCreateCustomGroup(null)}>
-                新建空白色庫
+    <div className="page-shell palette-page">
+      <div className="page-header">
+        <div className="page-header-inner">
+          <div>
+            <h2>色庫管理</h2>
+            <p className="hint">
+              {proMode
+                ? '可複製現有群組建立自訂色庫，並編輯色號。支援匯入/匯出 JSON。'
+                : '可複製現有群組建立自訂色庫，並編輯色號。升級 Pro 可匯入/匯出。'}
+            </p>
+          </div>
+          {proMode && (
+            <div className="page-header-actions">
+              <button type="button" className="ghost" style={{ width: 'auto' }} onClick={onExportCustomPaletteJson}>
+                匯出 JSON
               </button>
-            </div>
-            <p className="hint">請在右側卡片點選要編輯的自訂群組，進入後可直接點色票改色。</p>
-            {editablePaletteGroup && (
-              <>
-                <div className="row three">
-                  <input type="text" value={paletteNewGroupName} onChange={(e) => onSetPaletteNewGroupName(e.target.value)} />
-                  <button type="button" className="ghost" onClick={onUpdateCustomGroupName}>更新群組名</button>
-                  <button type="button" className="ghost" onClick={onDeleteCustomGroup}>刪除群組</button>
-                </div>
-                <div className="row three">
-                  <input type="text" placeholder="色號名稱" value={paletteNewColorName} onChange={(e) => onSetPaletteNewColorName(e.target.value)} />
-                  <input type="color" value={normalizeColorHex(paletteNewColorHex).toLowerCase()} onChange={(e) => onSetPaletteNewColorHex(e.target.value)} />
-                  <button type="button" className="ghost" onClick={onAddColorToCustomGroup}>新增色號</button>
-                </div>
-              </>
-            )}
-          </>
-        )}
-        {proMode && (
-          <div className="row two">
-            <button type="button" className="ghost" onClick={onExportCustomPaletteJson}>
-              匯出自訂色庫
-            </button>
-            <label>
-              匯入自訂色庫
+              <button type="button" className="ghost" style={{ width: 'auto' }} onClick={() => paletteImportRef.current?.click()}>
+                匯入 JSON
+              </button>
               <input
+                ref={paletteImportRef}
                 type="file"
                 accept="application/json"
+                style={{ display: 'none' }}
                 onChange={(e) => {
                   const file = e.target.files?.[0] ?? null;
                   onImportCustomPaletteJson(file);
                   e.currentTarget.value = '';
                 }}
               />
-            </label>
-          </div>
-        )}
-        <p className="status">{statusText}</p>
-      </section>
+            </div>
+          )}
+        </div>
+      </div>
 
-      <section className="panel stats">
-        <h2>{paletteTab === 'builtin' ? '原有色庫總覽' : '自訂色號明細'}</h2>
+      <div className="page-sticky-bar">
+        <div className="page-sticky-bar-inner" style={{ height: 44 }}>
+          <div className="page-tabs">
+            <button type="button" className={`page-tab-btn${paletteTab === 'builtin' ? ' active' : ''}`} onClick={() => onSetPaletteTab('builtin')}>
+              原有色庫
+            </button>
+            <button type="button" className={`page-tab-btn${paletteTab === 'custom' ? ' active' : ''}`} onClick={() => onSetPaletteTab('custom')}>
+              自訂色庫
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="page-content">
+        <div className="page-content-inner">
+          <div className="palette-two-col">
+            <aside className="panel palette-controls-col">
+              {paletteTab === 'builtin' ? (
+                <>
+                  <p className="hint">請在右側卡片點選要預覽的群組，進入後可複製到自訂色庫。</p>
+                  <label>
+                    新群組名稱（可選）
+                    <input type="text" value={paletteNewGroupName} onChange={(e) => onSetPaletteNewGroupName(e.target.value)} placeholder="留空會自動命名" />
+                  </label>
+                </>
+              ) : (
+                <>
+                  <div className="row one">
+                    <button type="button" className="ghost" onClick={() => onCreateCustomGroup(null)}>
+                      新建空白色庫
+                    </button>
+                  </div>
+                  <p className="hint">請在右側卡片點選要編輯的自訂群組，進入後可直接點色票改色。</p>
+                  {editablePaletteGroup && (
+                    <>
+                      <div className="row three">
+                        <input type="text" value={paletteNewGroupName} onChange={(e) => onSetPaletteNewGroupName(e.target.value)} />
+                        <button type="button" className="ghost" onClick={onUpdateCustomGroupName}>更新群組名</button>
+                        <button type="button" className="ghost" onClick={onDeleteCustomGroup}>刪除群組</button>
+                      </div>
+                      <div className="row three">
+                        <input type="text" placeholder="色號名稱" value={paletteNewColorName} onChange={(e) => onSetPaletteNewColorName(e.target.value)} />
+                        <input type="color" value={normalizeColorHex(paletteNewColorHex).toLowerCase()} onChange={(e) => onSetPaletteNewColorHex(e.target.value)} />
+                        <button type="button" className="ghost" onClick={onAddColorToCustomGroup}>新增色號</button>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+              <p className="status">{statusText}</p>
+            </aside>
+
+            <section>
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 600, color: 'var(--ink-2)' }}>
+                {paletteTab === 'builtin' ? '原有色庫總覽' : '自訂色號明細'}
+              </h3>
         {paletteTab === 'builtin' ? (
           <div className="palette-library">
             <div className="palette-group-grid">
@@ -305,7 +326,10 @@ export default function PalettePage({
         ) : (
           <p className="hint">請先建立或選擇一個自訂群組。</p>
         )}
-      </section>
-    </main>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }

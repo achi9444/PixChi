@@ -16,3 +16,22 @@ export const SHORTCUTS = {
   tilePrev: ['alt+arrowleft'],
   tileNext: ['alt+arrowright']
 } as const;
+
+export const SHORTCUT_LABELS: Record<keyof typeof SHORTCUTS, string> = {
+  undo: '復原',
+  redo: '重做',
+  toolPan: '手型',
+  toolPaint: '上色',
+  toolErase: '橡皮擦',
+  toolBucket: '油漆桶',
+  toolPicker: '取色',
+  toggleCode: '切換色號文字',
+  brushDown: '筆刷縮小',
+  brushUp: '筆刷放大',
+  zoomIn: '放大',
+  zoomOut: '縮小',
+  zoomReset: '重置視圖',
+  toggleCanvasFullscreen: '畫布全螢幕',
+  tilePrev: '上一分塊',
+  tileNext: '下一分塊'
+};

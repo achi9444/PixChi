@@ -86,7 +86,9 @@ export default function StatsPanel({
         <>
           <div className="draft-box-head" style={{ cursor: 'pointer' }} onClick={() => setCostOpen((v) => !v)}>
             <span style={{ fontSize: 13 }}>成本試算</span>
-            <span>{costOpen ? '▲' : '▼'}</span>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ transition: 'transform 200ms', transform: costOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
           </div>
           {costOpen && (<>
           <div className="row two">
@@ -170,14 +172,16 @@ export default function StatsPanel({
       )}
 
       <label>
-        統計搜尋（僅過濾顯示，不影響全量匯出）
+        統計搜尋
         <input
           type="text"
           placeholder="搜尋色號..."
           value={statsSearch}
           onChange={(e) => onStatsSearchChange(e.target.value)}
+          title="僅過濾顯示，不影響全量匯出"
         />
       </label>
+      <p className="hint" style={{ marginTop: 2 }}>僅過濾顯示，不影響全量匯出</p>
 
       <div className="table-wrap">
         <table>

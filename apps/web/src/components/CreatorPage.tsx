@@ -10,32 +10,49 @@ export default function CreatorPage({ apiClient }: Props) {
   const [tab, setTab] = useState<'profile' | 'designs'>('profile');
 
   return (
-    <div className="creator-page">
-      <div className="market-header">
-        <h2>創作者後台</h2>
-        <p className="hint">管理你的個人資料與設計圖</p>
+    <div className="page-shell creator-page">
+      <div className="page-header">
+        <div className="page-header-inner">
+          <div>
+            <h2>創作者後台</h2>
+            <p className="hint">管理你的個人資料與設計圖</p>
+          </div>
+        </div>
       </div>
 
-      <div className="market-tabs">
-        <button
-          className={tab === 'profile' ? 'primary' : 'ghost'}
-          onClick={() => setTab('profile')}
-        >
-          個人資料
-        </button>
-        <button
-          className={tab === 'designs' ? 'primary' : 'ghost'}
-          onClick={() => setTab('designs')}
-        >
-          設計圖管理
-        </button>
+      <div className="page-sticky-bar">
+        <div className="page-sticky-bar-inner creator-sticky-inner">
+          <div className="page-tabs">
+            <button
+              type="button"
+              className={`page-tab-btn${tab === 'profile' ? ' active' : ''}`}
+              onClick={() => setTab('profile')}
+            >
+              個人資料
+            </button>
+            <button
+              type="button"
+              className={`page-tab-btn${tab === 'designs' ? ' active' : ''}`}
+              onClick={() => setTab('designs')}
+            >
+              設計圖管理
+            </button>
+          </div>
+          {tab === 'designs' && (
+            <div className="creator-tab-actions" id="creator-tab-actions-portal" />
+          )}
+        </div>
       </div>
 
-      {tab === 'profile' ? (
-        <ProfileEditor apiClient={apiClient} />
-      ) : (
-        <DesignManager apiClient={apiClient} />
-      )}
+      <div className="page-content">
+        <div className="page-content-inner">
+          {tab === 'profile' ? (
+            <ProfileEditor apiClient={apiClient} />
+          ) : (
+            <DesignManager apiClient={apiClient} />
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -100,8 +117,9 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
   if (!profile) return <p className="hint" style={{ padding: 24 }}>載入中...</p>;
 
   return (
-    <div className="panel" style={{ maxWidth: 520 }}>
-      <form onSubmit={handleSave}>
+    <div className="creator-profile-layout">
+      <div className="panel creator-profile-form-col">
+        <form onSubmit={handleSave}>
         <label>
           自我介紹
           <textarea
@@ -124,13 +142,13 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
           />
         </label>
 
-        <label className="inline-check" style={{ margin: '12px 0' }}>
+        <label className="switch-row" style={{ margin: '12px 0' }}>
+          目前接單中
           <input
             type="checkbox"
             checked={acceptingOrders}
             onChange={(e) => setAcceptingOrders(e.target.checked)}
           />
-          目前接單中
         </label>
 
         <label>
@@ -201,6 +219,30 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
           </button>
         </div>
       </form>
+      </div>
+
+      <div className="creator-profile-aside">
+        <div className="panel">
+          <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: 'var(--ink-2)' }}>公開頁面預覽</p>
+          {bio && <p style={{ margin: '0 0 6px', fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>{bio}</p>}
+          {styleTags && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {styleTags.split(/[、\s]+/).filter(Boolean).map((t) => (
+                <span key={t} className="tag">{t}</span>
+              ))}
+            </div>
+          )}
+          {!bio && !styleTags && (
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--faint)' }}>尚無內容</p>
+          )}
+        </div>
+        <div className="panel">
+          <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>
+            完整填寫自我介紹與風格標籤，可提升在市集的曝光度。
+            外部聯絡連結僅登入會員可見。
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
@@ -246,8 +288,8 @@ function DesignManager({ apiClient }: { apiClient: ApiClient }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
-        <button className="primary" onClick={() => setShowForm(true)}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
+        <button className="primary" style={{ width: 'auto' }} onClick={() => setShowForm(true)}>
           ＋ 新增設計圖
         </button>
         <span className="hint">共 {designs.length} 個</span>
@@ -264,7 +306,7 @@ function DesignManager({ apiClient }: { apiClient: ApiClient }) {
       {designs.length === 0 ? (
         <p className="hint">尚未建立任何設計圖</p>
       ) : (
-        <div className="design-list">
+        <div className="design-mgmt-grid">
           {designs.map((d) => (
             <div key={d.id} className="design-item panel">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>

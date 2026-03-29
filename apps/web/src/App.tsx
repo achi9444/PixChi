@@ -4,14 +4,14 @@ import PalettePage from './components/PalettePage';
 import MarketPage from './components/MarketPage';
 import CreatorPage from './components/CreatorPage';
 import PublishDesignModal from './components/PublishDesignModal';
+import ExportModal, { type ExportMode } from './components/ExportModal';
 import StatsPanel from './components/StatsPanel';
 import CanvasPanel from './components/CanvasPanel';
-import DraftBox from './components/DraftBox';
-import ConversionPanel from './components/ConversionPanel';
 import FloatingColorPanel from './components/FloatingColorPanel';
-import ConstructionPanel from './components/ConstructionPanel';
+import FloatingConstructionPanel from './components/FloatingConstructionPanel';
+import LeftSidebar from './components/LeftSidebar';
 import { PUBLIC_PRICING_PRESET, COMPLEXITY_CAP_TIERS } from './config/pricing';
-import { SHORTCUTS } from './config/shortcuts';
+import { SHORTCUTS, SHORTCUT_LABELS } from './config/shortcuts';
 import { createDraft, deleteDraft, getDraftLimit, getDraftSnapshot, listDrafts, renameDraft, setDraftVersionNote, updateDraft, type DraftSnapshot, type DraftSummary } from './services/draftStore';
 import { loadCustomPaletteGroups, makeCustomPaletteId, saveCustomPaletteGroups, type CustomPaletteColor, type CustomPaletteGroup } from './services/customPaletteStore';
 import { ApiClient, type AuthUser, type CustomPaletteGroupDto, type DraftSummaryDto, type PaletteApiGroupDetail, type UserSettingsDto } from './services/api';
@@ -113,24 +113,6 @@ const AUTO_SAVE_INTERVAL_MS = 3 * 60 * 1000;
 const PDF_BEAD_MM = 2.6;
 const SHORTCUTS_STORAGE_KEY = 'pixchi_shortcuts_v1';
 const CONSTRUCTION_TEMPLATE_STORAGE_KEY = 'pixchi_construction_templates_v1';
-const SHORTCUT_LABELS: Record<keyof typeof SHORTCUTS, string> = {
-  undo: '復原',
-  redo: '重做',
-  toolPan: '手型',
-  toolPaint: '上色',
-  toolErase: '橡皮擦',
-  toolBucket: '油漆桶',
-  toolPicker: '取色',
-  toggleCode: '切換色號文字',
-  brushDown: '筆刷縮小',
-  brushUp: '筆刷放大',
-  zoomIn: '放大',
-  zoomOut: '縮小',
-  zoomReset: '重置視圖',
-  toggleCanvasFullscreen: '畫布全螢幕',
-  tilePrev: '上一分塊',
-  tileNext: '下一分塊'
-};
 const ASSET_BASE_URL = import.meta.env.BASE_URL;
 const PDF_FONT_URL = `${ASSET_BASE_URL}fonts/NotoSansTC-VF.ttf`;
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || 'http://localhost:8787';
@@ -145,14 +127,24 @@ let pdfRuntimePromise: Promise<{
 }> | null = null;
 
 function isShortcutMatch(ev: KeyboardEvent, shortcut: string) {
-  const parts = shortcut.toLowerCase().split('+');
-  const key = parts[parts.length - 1];
-  const needCtrl = parts.includes('ctrl');
-  const needMeta = parts.includes('meta');
-  const needShift = parts.includes('shift');
-  if (!!ev.ctrlKey !== needCtrl) return false;
-  if (!!ev.metaKey !== needMeta) return false;
-  if (!!ev.shiftKey !== needShift) return false;
+  const s = shortcut.toLowerCase();
+  // '+' 作為按鍵字元時，split('+') 會產生空字串，改用 lastIndexOf 解析
+  let modPart: string;
+  let key: string;
+  if (s === '+') {
+    modPart = '';
+    key = '+';
+  } else if (s.endsWith('++')) {
+    modPart = s.slice(0, -2);
+    key = '+';
+  } else {
+    const idx = s.lastIndexOf('+');
+    modPart = idx === -1 ? '' : s.slice(0, idx);
+    key = idx === -1 ? s : s.slice(idx + 1);
+  }
+  if (!!ev.ctrlKey !== modPart.includes('ctrl')) return false;
+  if (!!ev.metaKey !== modPart.includes('meta')) return false;
+  if (!!ev.shiftKey !== modPart.includes('shift')) return false;
   const actualKey = ev.key === ' ' ? 'space' : ev.key.toLowerCase();
   return actualKey === key;
 }
@@ -335,6 +327,8 @@ export default function App() {
   const [preMergeDeltaE, setPreMergeDeltaE] = useState(0);
   const [showCode, setShowCode] = useState(true);
   const [exportScale, setExportScale] = useState<1 | 2 | 3>(2);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportMode, setExportMode] = useState<ExportMode>('pdf');
   const [cropToolEnabled, setCropToolEnabled] = useState(true);
   const [cropHoverMode, setCropHoverMode] = useState<CropDragMode | null>(null);
   const [editTool, setEditTool] = useState<'pan' | 'paint' | 'erase' | 'bucket' | 'picker'>('pan');
@@ -363,6 +357,8 @@ export default function App() {
   const [editColorName, setEditColorName] = useState('');
   const [editColorMenuOpen, setEditColorMenuOpen] = useState(false);
   const [colorPanelVisible, setColorPanelVisible] = useState(false);
+  const [constructionPanelVisible, setConstructionPanelVisible] = useState(false);
+  const [sidebarCollapseSignal, setSidebarCollapseSignal] = useState(0);
   const [focusColorName, setFocusColorName] = useState('');
   const [focusColorSearch, setFocusColorSearch] = useState('');
   const [focusColorMenuOpen, setFocusColorMenuOpen] = useState(false);
@@ -395,7 +391,6 @@ export default function App() {
   const [compareVersionB, setCompareVersionB] = useState('');
   const [compareSummary, setCompareSummary] = useState('');
   const [shortcutConfig, setShortcutConfig] = useState<ShortcutConfig>(() => loadShortcutConfig());
-  const [shortcutOpen, setShortcutOpen] = useState(false);
 const [storageEstimateText, setStorageEstimateText] = useState('-');
   const [convertProgress, setConvertProgress] = useState<{ running: boolean; phase: string; percent: number }>({
     running: false,
@@ -418,7 +413,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   const [constructionCustomOrder, setConstructionCustomOrder] = useState<string[]>([]);
   const [constructionDragTaskId, setConstructionDragTaskId] = useState('');
   const [constructionTemplates, setConstructionTemplates] = useState<ConstructionTemplate[]>(() => loadConstructionTemplates());
-  const [constructionTemplateName, setConstructionTemplateName] = useState('我的模板');
+  const [constructionTemplateName, setConstructionTemplateName] = useState('');
   const [constructionTemplateId, setConstructionTemplateId] = useState('');
   const defaultShortcutConfig = useMemo(() => buildDefaultShortcutConfig(), []);
   const effectiveShortcutConfig = useMemo(
@@ -492,18 +487,6 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     if (constructionOrderRule === 'manual') setConstructionOrderRule('count_desc');
   }, [proMode, constructionOrderRule]);
 
-  useEffect(() => {
-    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-    if (!converted) return;
-    resizeTimerRef.current = setTimeout(() => {
-      if (converted.processInfo === 'blank') {
-        resizeBlankCanvas(cols, rows);
-      } else if (imageBitmap) {
-        runConvert();
-      }
-    }, 500);
-    return () => { if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current); };
-  }, [cols, rows]);
 
   const filteredEditColors = useMemo(() => {
     const q = paletteSearch.trim().toLowerCase();
@@ -665,6 +648,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   }, [converted, constructionStrategy]);
   const constructionTasks = useMemo(() => {
     if (!constructionBaseTasks.length) return [];
+    if (constructionStrategy === 'block') return constructionBaseTasks;
     if (constructionOrderRule !== 'manual') {
       return sortConstructionTasksByRule(constructionBaseTasks, constructionOrderRule);
     }
@@ -1238,9 +1222,15 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       imageDataUrl,
       imageMeta,
       gridMeta,
-      converted
+      converted,
+      constructionMode,
+      constructionStrategy,
+      constructionOrderRule,
+      constructionCustomOrder,
+      constructionShowDoneOverlay,
+      constructionDoneMap,
     };
-  }, [projectName, activeGroupName, cols, rows, strategy, preMergeDeltaE, showCode, exportScale, cropToolEnabled, cropRect, imageDataUrl, imageMeta, gridMeta, converted]);
+  }, [projectName, activeGroupName, cols, rows, strategy, preMergeDeltaE, showCode, exportScale, cropToolEnabled, cropRect, imageDataUrl, imageMeta, gridMeta, converted, constructionMode, constructionStrategy, constructionOrderRule, constructionCustomOrder, constructionShowDoneOverlay, constructionDoneMap]);
 
   useEffect(() => {
     latestSnapshotRef.current = buildDraftSnapshot();
@@ -1349,6 +1339,12 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         setImageMeta(snapshot.imageMeta || '-');
         setGridMeta(snapshot.gridMeta || '-');
         setConverted(snapshot.converted ?? null);
+        setConstructionMode(!!snapshot.constructionMode);
+        setConstructionStrategy((snapshot.constructionStrategy as 'block' | 'color') ?? 'color');
+        setConstructionOrderRule((snapshot.constructionOrderRule as ConstructionOrderRule) ?? 'count_desc');
+        setConstructionCustomOrder(snapshot.constructionCustomOrder ?? []);
+        setConstructionShowDoneOverlay(snapshot.constructionShowDoneOverlay ?? true);
+        setConstructionDoneMap(snapshot.constructionDoneMap ?? {});
         setUndoStack([]);
         setRedoStack([]);
         setHistoryItems([]);
@@ -1639,7 +1635,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     const viewCols = selectedLargeTile ? selectedLargeTile.colsPart : converted.cols;
     const viewRows = selectedLargeTile ? selectedLargeTile.rowsPart : converted.rows;
     const baseCell = Math.max(1, Math.floor(Math.min(drawW / viewCols, drawH / viewRows)));
-    const cell = Math.max(1, Math.floor(baseCell * zoom));
+    const cell = Math.max(1, baseCell * zoom);
     const gridW = cell * viewCols;
     const gridH = cell * viewRows;
     const ox = Math.floor((width - gridW) / 2 + panOffset.x);
@@ -1666,13 +1662,13 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       const focusMatch = focusVisibleNameSet ? focusVisibleNameSet.has(c.colorName) : c.colorName === focusColorName;
       const hasFocus = !!focusColorName;
       const focusOutlineEnabled = !constructionMode;
-      const isDimmed = hasFocus && !c.isEmpty && !focusMatch;
-      const displayHex = isDimmed ? toGrayHex(c.hex) : c.hex;
-      ctx.fillStyle = displayHex;
+      const isDimmed = showConstruction && constructionCurrentCellSet.size > 0
+        ? !c.isEmpty && !constructionCurrentCellSet.has(srcIdx)
+        : hasFocus && !c.isEmpty && !focusMatch;
+      ctx.fillStyle = c.hex;
       ctx.fillRect(x, y, cell, cell);
       if (isDimmed) {
-        // Wash out non-focused cells so the focused group remains visually dominant.
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.34)';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.80)';
         ctx.fillRect(x, y, cell, cell);
       }
       if (!fastRender) {
@@ -1683,51 +1679,35 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
 
       if (showConstruction) {
         if (constructionShowDoneOverlay && constructionDoneCellSet.has(srcIdx)) {
-          ctx.fillStyle = toGrayHex(c.hex);
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.60)';
           ctx.fillRect(x, y, cell, cell);
-          // Fade completed cells further so they read as "done" even if original colors are similar.
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.48)';
-          ctx.fillRect(x, y, cell, cell);
-          if (cell >= 4) {
-            const lineW = Math.max(2.1, Math.min(3.6, cell * 0.28));
-            ctx.strokeStyle = 'rgba(8, 52, 72, 0.88)';
-            ctx.lineWidth = lineW;
-            ctx.beginPath();
-            ctx.moveTo(x + 1, y + cell - 1);
-            ctx.lineTo(x + cell - 1, y + 1);
-            ctx.stroke();
-            ctx.strokeStyle = 'rgba(8, 52, 72, 0.72)';
-            ctx.lineWidth = Math.max(1.2, lineW * 0.8);
-            ctx.beginPath();
-            ctx.moveTo(x + 1, y + 1);
-            ctx.lineTo(x + cell - 1, y + cell - 1);
-            ctx.stroke();
-            ctx.strokeStyle = 'rgba(8, 52, 72, 0.92)';
-            ctx.lineWidth = Math.max(1.4, lineW * 0.7);
-            ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
-          }
         }
         if (constructionCurrentCellSet.has(srcIdx)) {
-          ctx.strokeStyle = 'rgba(245, 158, 11, 0.95)';
+          const dash = Math.max(2, Math.round(cell * 0.18));
+          ctx.save();
+          ctx.setLineDash([dash, dash]);
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
           ctx.lineWidth = Math.max(1.5, Math.min(3, cell * 0.14));
           ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
+          ctx.restore();
         }
       }
 
       if (focusOutlineEnabled && hasFocus && focusMatch && !c.isEmpty) {
-        // Dual outline keeps focus cells readable even when focus color is close to grayscale.
-        const outer = Math.max(2, Math.min(4, cell * 0.18));
-        const inner = Math.max(1, Math.min(2.5, cell * 0.12));
-        ctx.strokeStyle = '#1f1f1f';
-        ctx.lineWidth = outer;
+        const dash = Math.max(2, Math.round(cell * 0.18));
+        ctx.save();
+        ctx.setLineDash([dash, dash]);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.lineWidth = Math.max(1.5, Math.min(3, cell * 0.14));
         ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
-        ctx.strokeStyle = '#ffb703';
-        ctx.lineWidth = inner;
-        ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
+        ctx.restore();
       }
 
       if (!fastRender && showCode && cell >= 8 && !c.isEmpty) {
-        if (hasFocus && focusMatch) {
+        const isHighlighted = showConstruction && constructionCurrentCellSet.size > 0
+          ? constructionCurrentCellSet.has(srcIdx)
+          : hasFocus && focusMatch;
+        if (isHighlighted) {
           ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
           ctx.shadowBlur = Math.max(1, cell * 0.14);
           ctx.shadowOffsetX = 0;
@@ -1738,7 +1718,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           ctx.shadowOffsetX = 0;
           ctx.shadowOffsetY = 0;
         }
-        ctx.fillStyle = pickTextColor(displayHex);
+        ctx.fillStyle = isDimmed ? 'rgba(180, 180, 180, 0.5)' : pickTextColor(c.hex);
         ctx.font = `${Math.max(9, Math.floor(cell * 0.35))}px Segoe UI`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -1955,6 +1935,24 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     return () => window.removeEventListener('resize', onResize);
   }, [drawGrid]);
 
+  // 監聽 canvas-wrap 尺寸變化（sidebar panel 展開/收合時 layout 會改變但不觸發 window.resize）
+  useEffect(() => {
+    const wrap = canvasWrapRef.current;
+    if (!wrap) return;
+    const observer = new ResizeObserver(() => {
+      requestAnimationFrame(() => drawGrid());
+    });
+    observer.observe(wrap);
+    return () => observer.disconnect();
+  }, [drawGrid]);
+
+  useEffect(() => {
+    if (page === 'main') {
+      const raf = requestAnimationFrame(() => drawGrid());
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [page, drawGrid]);
+
   useEffect(() => {
     const onMouseUp = () => {
       isPointerDownRef.current = false;
@@ -2036,6 +2034,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setPanOffset({ x: 0, y: 0 });
     setImageMeta(`來源圖：${img.width} x ${img.height}`);
     setStatusText(`已載入圖片：${file.name}`);
+    setSidebarCollapseSignal((s) => s + 1);
   };
 
   const runConvert = async (options?: { overrideCols?: number; overrideRows?: number; allowOversize?: boolean; useLargeMode?: boolean }) => {
@@ -2071,7 +2070,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         }
       }
 
-      const dims = adjustGridByMode(safeCols, safeRows, sourceBitmap.width, sourceBitmap.height);
+      const fixDim = options?.overrideCols != null ? 'cols' : options?.overrideRows != null ? 'rows' : undefined;
+      const dims = adjustGridByMode(safeCols, safeRows, sourceBitmap.width, sourceBitmap.height, fixDim);
       const finalCols = Math.max(1, Math.min(dims.cols, sourceBitmap.width));
       const finalRows = Math.max(1, Math.min(dims.rows, sourceBitmap.height));
       const totalCells = finalCols * finalRows;
@@ -2157,6 +2157,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       } else {
         setStatusText(`轉換完成，可直接修色與匯出${mergeInfo}。`);
       }
+      setSidebarCollapseSignal((s) => s + 1);
     } finally {
       setTimeout(() => setConvertProgress({ running: false, phase: '', percent: 0 }), 350);
     }
@@ -2212,6 +2213,44 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setGridMeta(`${clampedCols} x ${clampedRows}（空白畫布）`);
   };
 
+  const applyImageCrop = async () => {
+    if (!imageBitmap || !cropRect) return;
+    const { x, y, w, h } = cropRect;
+    const isOverflow = x < 0 || y < 0 || x + w > imageBitmap.width || y + h > imageBitmap.height;
+    let newBitmap: ImageBitmap;
+    let cropCanvas: HTMLCanvasElement | null = null;
+    if (isOverflow) {
+      cropCanvas = document.createElement('canvas');
+      cropCanvas.width = w;
+      cropCanvas.height = h;
+      const pctx = cropCanvas.getContext('2d')!;
+      pctx.fillStyle = '#FFFFFF';
+      pctx.fillRect(0, 0, w, h);
+      pctx.drawImage(imageBitmap, -x, -y);
+      newBitmap = await createImageBitmap(cropCanvas);
+    } else {
+      newBitmap = await createImageBitmap(imageBitmap, x, y, w, h);
+    }
+    const offscreen = cropCanvas ?? (() => {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d')!.drawImage(newBitmap, 0, 0);
+      return c;
+    })();
+    const newDataUrl = offscreen.toDataURL('image/webp', 0.9) || offscreen.toDataURL('image/png');
+    setImageBitmap(newBitmap);
+    setImageDataUrl(newDataUrl);
+    setCropRect({ x: 0, y: 0, w, h });
+    setCols(w);
+    setRows(h);
+    setConverted(null);
+    setGridMeta('-');
+    setUndoStack([]);
+    setRedoStack([]);
+    setImageMeta(`來源圖：${w} x ${h}（已裁切）`);
+    setStatusText(`已套用裁切：${w} x ${h}`);
+  };
+
   const applyGridCrop = () => {
     if (!converted || !gridCropRect) return;
     const { x: cx, y: cy, w: cw, h: ch } = gridCropRect;
@@ -2247,6 +2286,44 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setUndoStack([]);
     setRedoStack([]);
   };
+
+  // Enter 套用裁切 / Esc 取消裁切
+  useEffect(() => {
+    const handler = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Enter' && ev.key !== 'Escape') return;
+      const tag = (ev.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (isCropDraggingRef.current) return; // 拖曳中由另一個 handler 處理
+
+      // 圖片裁切模式
+      if (cropToolEnabled && imageBitmap) {
+        const isTrimmed = cropRect && (
+          cropRect.x !== 0 || cropRect.y !== 0 ||
+          cropRect.w !== imageBitmap.width || cropRect.h !== imageBitmap.height
+        );
+        if (!isTrimmed) return;
+        ev.preventDefault();
+        if (ev.key === 'Enter') {
+          void applyImageCrop();
+        } else {
+          setCropRect({ x: 0, y: 0, w: imageBitmap.width, h: imageBitmap.height });
+        }
+        return;
+      }
+
+      // 格線裁切模式
+      if (gridCropRect && converted && cropToolEnabled) {
+        ev.preventDefault();
+        if (ev.key === 'Enter') {
+          applyGridCrop();
+        } else {
+          setGridCropRect(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [cropToolEnabled, imageBitmap, cropRect, gridCropRect, converted]);
 
   const onConvert = async () => {
     await runConvert();
@@ -2514,8 +2591,6 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         return;
       }
       setFocusColorName(cell.colorName);
-      const taskId = constructionCellTaskMap.get(idx);
-      if (taskId) setConstructionCurrentTaskId(taskId);
       setStatusText(`施工模式：已將 ${cell.colorName} 設為焦點色。`);
       return;
     }
@@ -2960,6 +3035,34 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setStatusText('施工模式：已清除焦點與任務選取。');
   };
 
+  // 施工模式鍵盤快捷鍵：Enter 完成+跳下一個，↑↓ 切換任務
+  useEffect(() => {
+    if (!constructionMode || !constructionTasks.length) return;
+    const handler = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Enter' && ev.key !== 'ArrowDown' && ev.key !== 'ArrowUp') return;
+      const tag = (ev.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      const currentIdx = constructionTasks.findIndex((t) => t.id === constructionCurrentTaskId);
+      if (ev.key === 'Enter') {
+        if (!constructionCurrentTaskId) return;
+        ev.preventDefault();
+        toggleConstructionDone(constructionCurrentTaskId, true);
+        const next =
+          constructionTasks.find((t, i) => i > currentIdx && !constructionDoneMap[t.id]) ??
+          constructionTasks.find((t) => !constructionDoneMap[t.id] && t.id !== constructionCurrentTaskId);
+        if (next) setFocusFromTask(next.id);
+      } else {
+        ev.preventDefault();
+        const step = ev.key === 'ArrowDown' ? 1 : -1;
+        const nextIdx = Math.max(0, Math.min(constructionTasks.length - 1, currentIdx + step));
+        const nextTask = constructionTasks[nextIdx];
+        if (nextTask && nextTask.id !== constructionCurrentTaskId) setFocusFromTask(nextTask.id);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [constructionMode, constructionTasks, constructionCurrentTaskId, constructionDoneMap]);
+
   const reorderConstructionTask = (fromId: string, toId: string) => {
     if (!proMode || !constructionTasks.length || fromId === toId) return;
     setConstructionOrderRule('manual');
@@ -3211,6 +3314,26 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setStatusText('CSV 匯出完成。');
   };
 
+  const exportJpeg = () => {
+    const preflight = runExportPreflight('pdf');
+    if (preflight) { setStatusText(`匯出前檢查失敗：${preflight}`); return; }
+    const canvas = buildExportGridCanvas(converted!, showCode, PDF_BEAD_MM, {
+      exportScale,
+      showRuler: proMode && showRuler,
+      showGuide: proMode && showGuide,
+      guideEvery,
+    });
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `${safeFileName(projectName)}-pattern.jpg`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setStatusText('JPEG 匯出完成。');
+    setExportModalOpen(false);
+  };
+
   const exportPdfLike = async () => {
     const preflight = runExportPreflight('pdf');
     if (preflight) {
@@ -3402,6 +3525,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       const pdfBytes = await pdfDoc.save();
       downloadBytes(`${safeFileName(projectName)}-pattern.pdf`, pdfBytes, 'application/pdf');
       setStatusText('PDF 匯出完成。');
+      setExportModalOpen(false);
     } catch (err) {
       setStatusText(`PDF 匯出失敗：${(err as Error).message}`);
     } finally {
@@ -3698,11 +3822,28 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         isPdfBusy={isPdfBusy}
         hasConverted={!!converted}
         onReloadPalette={() => void loadPalette()}
-        onExportCsv={exportCsv}
         onImportPdfFile={(file) => void importPdfRestore(file)}
-        onExportPdf={() => void exportPdfLike()}
+        onOpenExportModal={() => setExportModalOpen(true)}
         onPublishToMarket={() => void openPublishModal()}
       />
+      {exportModalOpen && (
+        <ExportModal
+          proMode={proMode}
+          exportMode={exportMode}
+          onExportModeChange={setExportMode}
+          exportScale={exportScale}
+          onExportScaleChange={setExportScale}
+          pdfPagination={pdfPagination}
+          pdfPageFrom={pdfPageFrom}
+          pdfPageTo={pdfPageTo}
+          onPdfPageFromChange={setPdfPageFrom}
+          onPdfPageToChange={setPdfPageTo}
+          isPdfBusy={isPdfBusy}
+          onExport={() => { if (exportMode === 'jpeg') exportJpeg(); else void exportPdfLike(); }}
+          onExportCsv={exportCsv}
+          onClose={() => setExportModalOpen(false)}
+        />
+      )}
       {publishModalOpen && (
         <PublishDesignModal
           previewDataUrl={publishPreviewUrl}
@@ -3747,226 +3888,196 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       
       ) : (
       <main className={`layout ${isCanvasFullscreen ? 'canvas-fullscreen' : ''}`.trim()}>
-        <section className="panel controls">
-          <h2>轉換設定</h2>
-
-          <ConversionPanel
-            groups={groups}
-            activeGroupName={activeGroupName}
-            onActiveGroupNameChange={setActiveGroupName}
-            onImageSelected={(file) => void onImageSelected(file)}
-            imageBitmap={imageBitmap}
-            cropToolEnabled={cropToolEnabled}
-            cropRect={cropRect}
-            cols={cols}
-            rows={rows}
-            onColsChange={setCols}
-            onRowsChange={setRows}
-            maxGridSize={MAX_GRID_SIZE}
-            preMergeDeltaE={preMergeDeltaE}
-            onPreMergeDeltaEChange={setPreMergeDeltaE}
-            preMergeDeltaEMax={PRE_MERGE_DELTAE_MAX}
-            showCode={showCode}
-            onShowCodeChange={setShowCode}
-            exportScale={exportScale}
-            onExportScaleChange={setExportScale}
-            proMode={proMode}
-            pdfPagination={pdfPagination}
-            pdfPageFrom={pdfPageFrom}
-            pdfPageTo={pdfPageTo}
-            pdfJumpPage={pdfJumpPage}
-            onPdfPageFromChange={setPdfPageFrom}
-            onPdfPageToChange={setPdfPageTo}
-            onPdfJumpPageChange={setPdfJumpPage}
-            pdfTileThumbMap={pdfTileThumbMap}
-            largeGridMode={largeGridMode}
-            largeViewTilePage={largeViewTilePage}
-            onLargeViewTilePageChange={setLargeViewTilePage}
-            showRuler={showRuler}
-            onShowRulerChange={setShowRuler}
-            showGuide={showGuide}
-            onShowGuideChange={setShowGuide}
-            guideEvery={guideEvery}
-            onGuideEveryChange={setGuideEvery}
-            onConvert={() => void onConvert()}
-            onResetAll={resetAll}
-            convertProgress={convertProgress}
-            oversizePlan={oversizePlan}
-            onApplyOversizeSuggest={() => {
-              if (!oversizePlan) return;
-              setCols(oversizePlan.suggestCols);
-              setRows(oversizePlan.suggestRows);
-              void runConvert({
-                overrideCols: oversizePlan.suggestCols,
-                overrideRows: oversizePlan.suggestRows,
-                allowOversize: true,
-                useLargeMode: false
-              });
-            }}
-            onApplyOversizeLargeMode={() => void runConvert({ allowOversize: true, useLargeMode: true })}
-            onDismissOversizePlan={() => setOversizePlan(null)}
-            gridSoftLimit={GRID_SOFT_LIMIT}
-            onCreateBlankCanvas={(opts) => createBlankCanvas(opts)}
-            hasConverted={!!converted}
-            projectName={projectName}
-          />
-
-          {/* ColorEditPanel moved to FloatingColorPanel */}
-
-          {converted && (
-            <ConstructionPanel
-              proMode={proMode}
-              constructionMode={constructionMode}
-              onConstructionModeChange={setConstructionMode}
-              constructionStrategy={constructionStrategy}
-              onConstructionStrategyChange={setConstructionStrategy}
-              constructionOrderRule={constructionOrderRule}
-              onConstructionOrderRuleChange={(rule) => {
-                setConstructionOrderRule(rule);
-                if (rule !== 'manual') setConstructionCustomOrder([]);
-              }}
-              constructionShowDoneOverlay={constructionShowDoneOverlay}
-              onConstructionShowDoneOverlayChange={setConstructionShowDoneOverlay}
-              constructionRuleInference={constructionRuleInference}
-              onApplyInferredRule={applyInferredConstructionRule}
-              constructionTemplates={constructionTemplates}
-              constructionTemplateId={constructionTemplateId}
-              onConstructionTemplateIdChange={setConstructionTemplateId}
-              constructionTemplateName={constructionTemplateName}
-              onConstructionTemplateNameChange={setConstructionTemplateName}
-              onApplyConstructionTemplate={applyConstructionTemplate}
-              onDeleteConstructionTemplate={deleteConstructionTemplate}
-              onSaveConstructionTemplate={saveConstructionTemplate}
-              constructionTasks={constructionTasks}
-              constructionDoneMap={constructionDoneMap}
-              constructionCurrentTaskId={constructionCurrentTaskId}
-              constructionDragTaskId={constructionDragTaskId}
-              constructionItemRefs={constructionItemRefs}
-              constructionListRef={constructionListRef}
-              constructionCompletionText={constructionCompletionText}
-              onToggleConstructionDone={toggleConstructionDone}
-              onReorderConstructionTask={reorderConstructionTask}
-              onConstructionDragTaskIdChange={setConstructionDragTaskId}
-              onSetFocusFromTask={setFocusFromTask}
-            />
-          )}
-
-          <label>
-            專案名稱
-            <input type="text" value={projectName} onChange={(e) => setProjectName(e.target.value)} />
-          </label>
-
-          <DraftBox
-            authUser={authUser}
-            lastSavedAt={lastSavedAt}
-            storageEstimateText={storageEstimateText}
-            drafts={drafts}
-            activeDraftId={activeDraftId}
-            activeDraft={activeDraft}
-            activeVersionMeta={activeVersionMeta}
-            isDraftBusy={isDraftBusy}
-            draftRenameInput={draftRenameInput}
-            onDraftRenameInputChange={setDraftRenameInput}
-            activeDraftVersionId={activeDraftVersionId}
-            draftVersionNoteInput={draftVersionNoteInput}
-            onDraftVersionNoteInputChange={setDraftVersionNoteInput}
-            compareVersionA={compareVersionA}
-            compareVersionB={compareVersionB}
-            compareSummary={compareSummary}
-            onCompareVersionAChange={setCompareVersionA}
-            onCompareVersionBChange={setCompareVersionB}
-            proMode={proMode}
-            getDraftLimit={getDraftLimit}
-            onSelectDraft={(id) => {
-              if (!id) {
-                setActiveDraftId('');
-                setActiveDraftVersionId('');
-                return;
-              }
-              setActiveDraftId(id);
+        <LeftSidebar
+          converted={!!converted}
+          proMode={proMode}
+          statusText={statusText}
+          groups={groups}
+          activeGroupName={activeGroupName}
+          onActiveGroupNameChange={setActiveGroupName}
+          onImageSelected={(file) => void onImageSelected(file)}
+          imageBitmap={imageBitmap}
+          cropToolEnabled={cropToolEnabled}
+          cropRect={cropRect}
+          cols={cols}
+          rows={rows}
+          maxGridSize={MAX_GRID_SIZE}
+          preMergeDeltaE={preMergeDeltaE}
+          onPreMergeDeltaEChange={setPreMergeDeltaE}
+          preMergeDeltaEMax={PRE_MERGE_DELTAE_MAX}
+          showCode={showCode}
+          onShowCodeChange={setShowCode}
+          pdfPagination={pdfPagination}
+          pdfJumpPage={pdfJumpPage}
+          onPdfJumpPageChange={setPdfJumpPage}
+          pdfTileThumbMap={pdfTileThumbMap}
+          largeGridMode={largeGridMode}
+          largeViewTilePage={largeViewTilePage}
+          onLargeViewTilePageChange={setLargeViewTilePage}
+          showRuler={showRuler}
+          onShowRulerChange={setShowRuler}
+          showGuide={showGuide}
+          onShowGuideChange={setShowGuide}
+          guideEvery={guideEvery}
+          onGuideEveryChange={setGuideEvery}
+          onConvert={() => void onConvert()}
+          onResetAll={resetAll}
+          convertProgress={convertProgress}
+          oversizePlan={oversizePlan}
+          onApplyOversizeSuggest={() => {
+            if (!oversizePlan) return;
+            setCols(oversizePlan.suggestCols);
+            setRows(oversizePlan.suggestRows);
+            void runConvert({
+              overrideCols: oversizePlan.suggestCols,
+              overrideRows: oversizePlan.suggestRows,
+              allowOversize: true,
+              useLargeMode: false
+            });
+          }}
+          onApplyOversizeLargeMode={() => void runConvert({ allowOversize: true, useLargeMode: true })}
+          onDismissOversizePlan={() => setOversizePlan(null)}
+          gridSoftLimit={GRID_SOFT_LIMIT}
+          onCreateBlankCanvas={(opts) => createBlankCanvas(opts)}
+          hasConverted={!!converted}
+          projectName={projectName}
+          constructionMode={constructionMode}
+          onConstructionModeChange={setConstructionMode}
+          constructionStrategy={constructionStrategy}
+          onConstructionStrategyChange={setConstructionStrategy}
+          constructionOrderRule={constructionOrderRule}
+          onConstructionOrderRuleChange={(rule) => {
+            setConstructionOrderRule(rule);
+            if (rule !== 'manual') setConstructionCustomOrder([]);
+          }}
+          constructionShowDoneOverlay={constructionShowDoneOverlay}
+          onConstructionShowDoneOverlayChange={setConstructionShowDoneOverlay}
+          constructionRuleInference={constructionRuleInference}
+          onApplyInferredRule={applyInferredConstructionRule}
+          constructionTemplates={constructionTemplates}
+          constructionTemplateId={constructionTemplateId}
+          onConstructionTemplateIdChange={setConstructionTemplateId}
+          constructionTemplateName={constructionTemplateName}
+          onConstructionTemplateNameChange={setConstructionTemplateName}
+          onApplyConstructionTemplate={applyConstructionTemplate}
+          onDeleteConstructionTemplate={deleteConstructionTemplate}
+          onSaveConstructionTemplate={saveConstructionTemplate}
+          constructionTasks={constructionTasks}
+          constructionDoneMap={constructionDoneMap}
+          constructionCurrentTaskId={constructionCurrentTaskId}
+          constructionDragTaskId={constructionDragTaskId}
+          constructionItemRefs={constructionItemRefs}
+          constructionListRef={constructionListRef}
+          constructionCompletionText={constructionCompletionText}
+          onToggleConstructionDone={toggleConstructionDone}
+          onReorderConstructionTask={reorderConstructionTask}
+          onConstructionDragTaskIdChange={setConstructionDragTaskId}
+          onSetFocusFromTask={setFocusFromTask}
+          onProjectNameChange={setProjectName}
+          authUser={authUser}
+          lastSavedAt={lastSavedAt}
+          storageEstimateText={storageEstimateText}
+          drafts={drafts}
+          activeDraftId={activeDraftId}
+          activeDraft={activeDraft}
+          activeVersionMeta={activeVersionMeta}
+          isDraftBusy={isDraftBusy}
+          draftRenameInput={draftRenameInput}
+          onDraftRenameInputChange={setDraftRenameInput}
+          activeDraftVersionId={activeDraftVersionId}
+          draftVersionNoteInput={draftVersionNoteInput}
+          onDraftVersionNoteInputChange={setDraftVersionNoteInput}
+          compareVersionA={compareVersionA}
+          compareVersionB={compareVersionB}
+          compareSummary={compareSummary}
+          onCompareVersionAChange={setCompareVersionA}
+          onCompareVersionBChange={setCompareVersionB}
+          getDraftLimit={getDraftLimit}
+          onSelectDraft={(id) => {
+            if (!id) {
+              setActiveDraftId('');
               setActiveDraftVersionId('');
-              void loadDraftById(id);
-            }}
-            onSelectDraftVersion={(versionId) => {
-              setActiveDraftVersionId(versionId);
-              if (!activeDraftId) return;
-              void loadDraftById(activeDraftId, versionId || undefined);
-            }}
-            onSaveDraft={(opts) => void saveDraft(opts)}
-            onRemoveDraft={() => void removeDraftById(activeDraftId)}
-            onSaveDraftRename={() => void saveDraftRename()}
-            onSaveVersionNote={() => void saveVersionNote()}
-            onCompareDraftVersions={() => void compareDraftVersions()}
-          />
-
-          {proMode && (
-            <div className="shortcut-box">
-              <div className="collapsible-header" onClick={() => setShortcutOpen((v) => !v)}>
-                <h3>快捷鍵設定</h3>
-                <span className={`chevron ${shortcutOpen ? 'open' : ''}`}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
-                </span>
-              </div>
-              {shortcutOpen && (
-                <>
-                  {Object.keys(SHORTCUTS).map((key) => {
-                    const k = key as keyof typeof SHORTCUTS;
-                    return (
-                      <label key={`shortcut-${k}`}>
-                        {SHORTCUT_LABELS[k]}
-                        <input
-                          type="text"
-                          value={(shortcutConfig[k] ?? []).join(', ')}
-                          onChange={(e) => updateShortcutByText(k, e.target.value)}
-                          placeholder={SHORTCUTS[k].join(', ')}
-                        />
-                      </label>
-                    );
-                  })}
-                  {shortcutConflicts.length > 0 && (
-                    <div className="shortcut-conflict">
-                      <strong>快捷鍵衝突</strong>
-                      {shortcutConflicts.map((c) => (
-                        <div key={`conflict-${c.hotkey}`} className="history-item">
-                          {c.hotkey}：{c.actions.map((a) => SHORTCUT_LABELS[a]).join(' / ')}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <button type="button" className="ghost" style={{ width: '100%' }} onClick={resetShortcutDefaults}>
-                    還原預設
-                  </button>
-                </>
-              )}
-            </div>
-          )}
-
-          <div className="history-box">
-            <strong>最近操作</strong>
-            {undoStack.length ? (
-              [...undoStack]
-                .slice(-6)
-                .reverse()
-                .map((batch, i) => {
-                  const remaining = undoStack.length - (i + 1);
-                  return (
-                    <button key={`${batch.label}-${i}`} type="button" className="history-item history-jump" onClick={() => rollbackToStep(remaining)}>
-                      {batch.label}
-                    </button>
-                  );
-                })
-            ) : (
-              <div className="history-item">尚無操作</div>
-            )}
-            {historyItems.length > 0 && <div className="history-item">最新：{historyItems[0]}</div>}
-          </div>
-
-          <p className="status">{statusText}</p>
-        </section>
+              return;
+            }
+            setActiveDraftId(id);
+            setActiveDraftVersionId('');
+            void loadDraftById(id);
+          }}
+          onSelectDraftVersion={(versionId) => {
+            setActiveDraftVersionId(versionId);
+            if (!activeDraftId) return;
+            void loadDraftById(activeDraftId, versionId || undefined);
+          }}
+          onSaveDraft={(opts) => void saveDraft(opts)}
+          onRemoveDraft={() => void removeDraftById(activeDraftId)}
+          onSaveDraftRename={() => void saveDraftRename()}
+          onSaveVersionNote={() => void saveVersionNote()}
+          onCompareDraftVersions={() => void compareDraftVersions()}
+          shortcutConfig={shortcutConfig}
+          onUpdateShortcutByText={updateShortcutByText}
+          shortcutConflicts={shortcutConflicts}
+          onResetShortcutDefaults={resetShortcutDefaults}
+          undoStack={undoStack}
+          onRollbackToStep={rollbackToStep}
+          historyItems={historyItems}
+          editTool={editTool}
+          onEditToolChange={setEditTool}
+          editColorHex={selectedEditColor?.hex ?? null}
+          editColorName={selectedEditColor?.name ?? ''}
+          onColorPanelToggle={() => setColorPanelVisible((v) => !v)}
+          onUndo={undo}
+          onRedo={redo}
+          hasImageBitmap={!!imageBitmap}
+          brushSize={brushSize}
+          onBrushSizeChange={setBrushSize}
+          bucketMode={bucketMode}
+          onBucketModeChange={setBucketMode}
+          onCropToolEnabledChange={(v) => {
+            setCropToolEnabled(v);
+            if (!v) setGridCropRect(null);
+          }}
+          hasCropRect={!!cropRect && !!imageBitmap ? (cropRect.x !== 0 || cropRect.y !== 0 || cropRect.w !== imageBitmap.width || cropRect.h !== imageBitmap.height) : false}
+          gridCropActive={!!gridCropRect && !!converted && cropToolEnabled}
+          onResetCropRect={() => {
+            if (!imageBitmap) return;
+            setCropRect({ x: 0, y: 0, w: imageBitmap.width, h: imageBitmap.height });
+          }}
+          onApplyGridCrop={applyGridCrop}
+          onApplyCrop={() => void applyImageCrop()}
+          collapseSignal={sidebarCollapseSignal}
+          constructionPanelVisible={constructionPanelVisible}
+          onConstructionPanelToggle={() => setConstructionPanelVisible((v) => !v)}
+        />
 
         <CanvasPanel
-          gridMeta={gridMeta}
           imageMeta={imageMeta}
+          cols={cols}
+          rows={rows}
+          onColsChange={(v) => {
+            setCols(v);
+            if (!converted) return;
+            if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+            resizeTimerRef.current = window.setTimeout(() => {
+              if (converted.processInfo === 'blank') {
+                resizeBlankCanvas(v, rows);
+              } else if (imageBitmap) {
+                void runConvert({ overrideCols: v });
+              }
+            }, 400);
+          }}
+          onRowsChange={(v) => {
+            setRows(v);
+            if (!converted) return;
+            if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+            resizeTimerRef.current = window.setTimeout(() => {
+              if (converted.processInfo === 'blank') {
+                resizeBlankCanvas(cols, v);
+              } else if (imageBitmap) {
+                void runConvert({ overrideRows: v });
+              }
+            }, 400);
+          }}
+          maxGridSize={MAX_GRID_SIZE}
           isCanvasFullscreen={isCanvasFullscreen}
           onToggleFullscreen={() => setIsCanvasFullscreen((v) => !v)}
           zoom={zoom}
@@ -3978,10 +4089,6 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           hasImageBitmap={!!imageBitmap}
           editTool={editTool}
           onEditToolChange={setEditTool}
-          brushSize={brushSize}
-          onBrushSizeChange={setBrushSize}
-          bucketMode={bucketMode}
-          onBucketModeChange={setBucketMode}
           onUndo={undo}
           onRedo={redo}
           largeOperationScope={largeOperationScope}
@@ -4006,14 +4113,10 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           gridCropActive={!!gridCropRect && !!converted && cropToolEnabled}
           onApplyGridCrop={applyGridCrop}
           onColorPanelToggle={() => setColorPanelVisible((v) => !v)}
-          onSetFocusColor={() => {
-            if (selectedEditColor && selectedEditColor.name !== EMPTY_EDIT_COLOR_NAME) {
-              setFocusColorName(selectedEditColor.name);
-            }
-          }}
           largeGridMode={largeGridMode}
           largeViewTilePage={largeViewTilePage}
           proMode={proMode}
+          projectName={projectName}
           onCanvasClick={onCanvasClick}
           onCanvasMouseDown={onCanvasMouseDown}
           onCanvasMouseMove={onCanvasMouseMove}
@@ -4079,6 +4182,48 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         onPaletteSearchChange={setPaletteSearch}
         onReplaceAllSameColor={replaceAllSameColor}
         onAddOneCellOutline={addOneCellOutline}
+      />
+      <FloatingConstructionPanel
+        visible={constructionPanelVisible}
+        onClose={() => setConstructionPanelVisible(false)}
+        proMode={proMode}
+        showCode={showCode}
+        onShowCodeChange={setShowCode}
+        showRuler={showRuler}
+        onShowRulerChange={setShowRuler}
+        showGuide={showGuide}
+        onShowGuideChange={setShowGuide}
+        guideEvery={guideEvery}
+        onGuideEveryChange={setGuideEvery}
+        constructionMode={constructionMode}
+        onConstructionModeChange={setConstructionMode}
+        constructionStrategy={constructionStrategy}
+        onConstructionStrategyChange={setConstructionStrategy}
+        constructionOrderRule={constructionOrderRule}
+        onConstructionOrderRuleChange={setConstructionOrderRule}
+        constructionShowDoneOverlay={constructionShowDoneOverlay}
+        onConstructionShowDoneOverlayChange={setConstructionShowDoneOverlay}
+        constructionRuleInference={constructionRuleInference}
+        onApplyInferredRule={applyInferredConstructionRule}
+        constructionTemplates={constructionTemplates}
+        constructionTemplateId={constructionTemplateId}
+        onConstructionTemplateIdChange={setConstructionTemplateId}
+        constructionTemplateName={constructionTemplateName}
+        onConstructionTemplateNameChange={setConstructionTemplateName}
+        onApplyConstructionTemplate={applyConstructionTemplate}
+        onDeleteConstructionTemplate={deleteConstructionTemplate}
+        onSaveConstructionTemplate={saveConstructionTemplate}
+        constructionTasks={constructionTasks}
+        constructionDoneMap={constructionDoneMap}
+        constructionCurrentTaskId={constructionCurrentTaskId}
+        constructionDragTaskId={constructionDragTaskId}
+        constructionItemRefs={constructionItemRefs}
+        constructionListRef={constructionListRef}
+        constructionCompletionText={constructionCompletionText}
+        onToggleConstructionDone={toggleConstructionDone}
+        onReorderConstructionTask={reorderConstructionTask}
+        onConstructionDragTaskIdChange={setConstructionDragTaskId}
+        onSetFocusFromTask={setFocusFromTask}
       />
     </>
   );
@@ -4667,10 +4812,12 @@ function buildDraftFingerprint(snapshot: DraftSnapshot) {
   return JSON.stringify(snapshot);
 }
 
-function adjustGridByMode(cols: number, rows: number, imgW: number, imgH: number) {
+function adjustGridByMode(cols: number, rows: number, imgW: number, imgH: number, fix?: 'cols' | 'rows') {
   const ratio = imgW / imgH;
   const opt1 = { cols: Math.max(1, Math.round(rows * ratio)), rows };
   const opt2 = { cols, rows: Math.max(1, Math.round(cols / ratio)) };
+  if (fix === 'cols') return opt2;
+  if (fix === 'rows') return opt1;
   const d1 = Math.abs(opt1.cols - cols) + Math.abs(opt1.rows - rows);
   const d2 = Math.abs(opt2.cols - cols) + Math.abs(opt2.rows - rows);
   return d1 <= d2 ? opt1 : opt2;

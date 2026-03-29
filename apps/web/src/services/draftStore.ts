@@ -14,6 +14,12 @@ export type DraftSnapshot = {
   imageMeta: string;
   gridMeta: string;
   converted: any | null;
+  constructionMode?: boolean;
+  constructionStrategy?: 'block' | 'color';
+  constructionOrderRule?: string;
+  constructionCustomOrder?: string[];
+  constructionShowDoneOverlay?: boolean;
+  constructionDoneMap?: Record<string, boolean>;
 };
 
 type DraftVersion = {

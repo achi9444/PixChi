@@ -80,113 +80,127 @@ export default function MarketPage({ apiClient, authUser }: Props) {
   }
 
   return (
-    <div className="market-page">
-      <div className="market-header">
-        <h2>拼豆市集</h2>
-        <p className="hint">瀏覽創作者設計圖，或尋找接訂單的創作者</p>
+    <div className="page-shell market-page">
+      <div className="page-header">
+        <div className="page-header-inner">
+          <div>
+            <h2>拼豆市集</h2>
+            <p className="hint">瀏覽創作者設計圖，或尋找接訂單的創作者</p>
+          </div>
+        </div>
       </div>
 
-      <div className="market-tabs">
-        <button
-          className={tab === 'designs' ? 'primary' : 'ghost'}
-          onClick={() => switchTab('designs')}
-        >
-          設計圖
-        </button>
-        <button
-          className={tab === 'creators' ? 'primary' : 'ghost'}
-          onClick={() => switchTab('creators')}
-        >
-          創作者
-        </button>
-      </div>
-
-      <div className="market-toolbar">
-        <form className="market-search" onSubmit={handleSearch}>
-          <input
-            type="text"
-            value={inputQ}
-            onChange={(e) => setInputQ(e.target.value)}
-            placeholder={tab === 'designs' ? '搜尋設計圖標題、說明...' : '搜尋創作者名稱、風格...'}
-          />
-          <button type="submit" className="primary">搜尋</button>
-          {searchQ && (
-            <button type="button" className="ghost" onClick={() => { setSearchQ(''); setInputQ(''); }}>
-              清除
-            </button>
-          )}
-        </form>
-
-        {tab === 'designs' && (
-          <div className="market-filters">
-            <select
-              value={licenseFilter}
-              onChange={(e) => {
-                setLicenseFilter(e.target.value as 'all' | 'personal' | 'commercial');
-                setDesignsPage(1);
-              }}
+      <div className="page-sticky-bar">
+        <div className="page-sticky-bar-inner market-sticky-inner">
+          <div className="page-tabs">
+            <button
+              type="button"
+              className={`page-tab-btn${tab === 'designs' ? ' active' : ''}`}
+              onClick={() => switchTab('designs')}
             >
-              <option value="all">全部授權</option>
-              <option value="personal">個人使用</option>
-              <option value="commercial">商業授權</option>
-            </select>
+              設計圖
+            </button>
+            <button
+              type="button"
+              className={`page-tab-btn${tab === 'creators' ? ' active' : ''}`}
+              onClick={() => switchTab('creators')}
+            >
+              創作者
+            </button>
           </div>
-        )}
 
-        {tab === 'creators' && (
-          <div className="market-filters">
-            <label className="inline-check">
+          <div className="market-toolbar-inline">
+            <form className="market-search" onSubmit={handleSearch}>
               <input
-                type="checkbox"
-                checked={onlyAccepting}
-                onChange={(e) => { setOnlyAccepting(e.target.checked); setCreatorsPage(1); }}
+                type="text"
+                value={inputQ}
+                onChange={(e) => setInputQ(e.target.value)}
+                placeholder={tab === 'designs' ? '搜尋設計圖標題、說明...' : '搜尋創作者名稱、風格...'}
               />
-              只顯示接單中
-            </label>
+              <button type="submit" className="primary">搜尋</button>
+              {searchQ && (
+                <button type="button" className="ghost" onClick={() => { setSearchQ(''); setInputQ(''); }}>
+                  清除
+                </button>
+              )}
+            </form>
+
+            {tab === 'designs' && (
+              <div className="market-filters">
+                <select
+                  value={licenseFilter}
+                  onChange={(e) => {
+                    setLicenseFilter(e.target.value as 'all' | 'personal' | 'commercial');
+                    setDesignsPage(1);
+                  }}
+                >
+                  <option value="all">全部授權</option>
+                  <option value="personal">個人使用</option>
+                  <option value="commercial">商業授權</option>
+                </select>
+              </div>
+            )}
+
+            {tab === 'creators' && (
+              <div className="market-filters">
+                <label className="inline-check">
+                  <input
+                    type="checkbox"
+                    checked={onlyAccepting}
+                    onChange={(e) => { setOnlyAccepting(e.target.checked); setCreatorsPage(1); }}
+                  />
+                  只顯示接單中
+                </label>
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
 
-      {error && <p className="status error">{error}</p>}
+      <div className="page-content">
+        <div className="page-content-inner">
+          {error && <p className="status error">{error}</p>}
 
-      {loading ? (
-        <p className="hint" style={{ padding: 24, textAlign: 'center' }}>載入中...</p>
-      ) : tab === 'designs' ? (
-        <>
-          <p className="hint market-count">共 {designsTotal} 個設計圖</p>
-          {designs.length === 0 ? (
-            <div className="market-empty">
-              <p>目前還沒有公開的設計圖</p>
-              <p className="hint">創作者上架後就會出現在這裡，也可以切換到「創作者」頁面找人接訂單</p>
-              {!authUser && <p className="hint">登入後可直接聯絡創作者</p>}
-            </div>
+          {loading ? (
+            <p className="hint" style={{ padding: 24, textAlign: 'center' }}>載入中...</p>
+          ) : tab === 'designs' ? (
+            <>
+              <p className="hint market-count">共 {designsTotal} 個設計圖</p>
+              {designs.length === 0 ? (
+                <div className="market-empty">
+                  <p>目前還沒有公開的設計圖</p>
+                  <p className="hint">創作者上架後就會出現在這裡，也可以切換到「創作者」頁面找人接訂單</p>
+                  {!authUser && <p className="hint">登入後可直接聯絡創作者</p>}
+                </div>
+              ) : (
+                <div className="market-grid">
+                  {designs.map((d) => (
+                    <DesignCard key={d.id} design={d} authUser={authUser} />
+                  ))}
+                </div>
+              )}
+              <Pagination page={designsPage} totalPages={designsTotalPages} onChange={setDesignsPage} />
+            </>
           ) : (
-            <div className="market-grid">
-              {designs.map((d) => (
-                <DesignCard key={d.id} design={d} authUser={authUser} />
-              ))}
-            </div>
+            <>
+              <p className="hint market-count">共 {creatorsTotal} 位創作者</p>
+              {creators.length === 0 ? (
+                <div className="market-empty">
+                  <p>目前還沒有創作者</p>
+                  <p className="hint">訂閱 Pro 方案後即可建立創作者主頁並在此曝光</p>
+                </div>
+              ) : (
+                <div className="market-creator-list">
+                  {creators.map((c) => (
+                    <CreatorCard key={c.username} creator={c} authUser={authUser} />
+                  ))}
+                </div>
+              )}
+              <Pagination page={creatorsPage} totalPages={creatorsTotalPages} onChange={setCreatorsPage} />
+            </>
           )}
-          <Pagination page={designsPage} totalPages={designsTotalPages} onChange={setDesignsPage} />
-        </>
-      ) : (
-        <>
-          <p className="hint market-count">共 {creatorsTotal} 位創作者</p>
-          {creators.length === 0 ? (
-            <div className="market-empty">
-              <p>目前還沒有創作者</p>
-              <p className="hint">訂閱 Pro 方案後即可建立創作者主頁並在此曝光</p>
-            </div>
-          ) : (
-            <div className="market-creator-list">
-              {creators.map((c) => (
-                <CreatorCard key={c.username} creator={c} authUser={authUser} />
-              ))}
-            </div>
-          )}
-          <Pagination page={creatorsPage} totalPages={creatorsTotalPages} onChange={setCreatorsPage} />
-        </>
-      )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -28,6 +28,7 @@ type Props = {
   onUsernameChange: (v: string) => void;
   onPasswordChange: (v: string) => void;
   onClosePanel: () => void;
+  onAvatarClick?: () => void;
 };
 
 export default function AuthPanel({
@@ -44,6 +45,7 @@ export default function AuthPanel({
   onUsernameChange,
   onPasswordChange,
   onClosePanel,
+  onAvatarClick,
 }: Props) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [regUsername, setRegUsername] = useState('');
@@ -77,12 +79,19 @@ export default function AuthPanel({
   }
 
   if (authUser) {
+    const avatarLetter = authUser.username.charAt(0).toUpperCase();
+    const roleLabel = ROLE_LABEL[authUser.role] ?? authUser.role;
     return (
       <>
-        <span className="hint">
-          {authUser.username}（{ROLE_LABEL[authUser.role] ?? authUser.role}）
-        </span>
-        <button className="ghost" onClick={onLogout}>
+        <button
+          className="user-avatar"
+          onClick={onAvatarClick}
+          title={`${authUser.username}（${roleLabel}）— 點擊進入後台`}
+          aria-label={`用戶 ${authUser.username}，點擊進入創作者後台`}
+        >
+          {avatarLetter}
+        </button>
+        <button className="ghost logout-separator" onClick={onLogout}>
           登出
         </button>
       </>
@@ -145,7 +154,7 @@ export default function AuthPanel({
                     type="button"
                     onClick={() => setShowLoginPwd(v => !v)}
                     aria-label={showLoginPwd ? '隱藏密碼' : '顯示密碼'}
-                    style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', width: 32, height: 28, padding: 0, background: 'transparent', border: 'none', color: 'var(--faint)', cursor: 'pointer' }}
+                    className="password-toggle-btn"
                   >
                     <EyeIcon open={showLoginPwd} />
                   </button>
@@ -188,7 +197,7 @@ export default function AuthPanel({
                     type="button"
                     onClick={() => setShowRegPwd(v => !v)}
                     aria-label={showRegPwd ? '隱藏密碼' : '顯示密碼'}
-                    style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', width: 32, height: 28, padding: 0, background: 'transparent', border: 'none', color: 'var(--faint)', cursor: 'pointer' }}
+                    className="password-toggle-btn"
                   >
                     <EyeIcon open={showRegPwd} />
                   </button>
@@ -209,7 +218,7 @@ export default function AuthPanel({
                     type="button"
                     onClick={() => setShowRegConfirm(v => !v)}
                     aria-label={showRegConfirm ? '隱藏密碼' : '顯示密碼'}
-                    style={{ position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)', width: 32, height: 28, padding: 0, background: 'transparent', border: 'none', color: 'var(--faint)', cursor: 'pointer' }}
+                    className="password-toggle-btn"
                   >
                     <EyeIcon open={showRegConfirm} />
                   </button>
