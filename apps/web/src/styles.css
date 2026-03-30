@@ -405,6 +405,15 @@ hr {
   background: var(--surface-3);
 }
 
+/* 修正 .top-actions button 高優先度規則造成的衝突 */
+.auth-panel .password-toggle-btn {
+  width: 32px;
+}
+.auth-panel .password-toggle-btn:active {
+  transform: translateY(-50%);
+  opacity: 1;
+}
+
 /* 登出分隔 */
 .logout-separator {
   padding-left: var(--sp-3) !important;
@@ -1204,6 +1213,8 @@ button.active-tool:hover:not(:disabled) {
   padding: 0;
   font-size: 16px;
   line-height: 1;
+  width: auto;
+  flex-shrink: 0;
 }
 
 .zoom-tools .zoom-input {
@@ -3135,9 +3146,9 @@ tbody tr:hover td {
 .floating-panel-mini {
   position: fixed;
   z-index: 500;
-  min-width: 36px;
+  width: 36px;
   height: 36px;
-  padding: 0 10px;
+  padding: 0;
   border-radius: var(--radius-md);
   background: var(--surface);
   border: 1px solid var(--line);
@@ -3148,7 +3159,6 @@ tbody tr:hover td {
   cursor: pointer;
   transition: box-shadow var(--duration-fast) var(--ease-out),
               transform var(--duration-fast) var(--ease-out);
-  gap: 6px;
 }
 .floating-panel-mini:hover {
   box-shadow: var(--shadow-lg);
@@ -3163,10 +3173,7 @@ tbody tr:hover td {
   position: absolute;
 }
 .floating-panel-mini svg {
-  position: absolute;
-  bottom: 2px;
-  right: 2px;
-  color: var(--muted);
+  color: var(--ink-2);
 }
 
 /* ── 37. Utilities ───────────────────────────────────────── */
@@ -3404,4 +3411,210 @@ tbody tr:hover td {
 
 .export-modal-footer button {
   min-width: 88px;
+}
+
+/* ── 37. Market Detail Modal ────────────────────────────── */
+.market-detail-modal-box button,
+.market-creator-modal-box button {
+  width: auto;
+}
+
+.market-detail-modal-box {
+  max-width: 760px;
+}
+
+.market-detail-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 0;
+}
+
+.market-detail-preview-col {
+  padding: 20px;
+  border-right: 1px solid var(--line);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.market-detail-no-preview {
+  background: var(--surface-3);
+  align-items: center;
+  min-height: 200px;
+}
+
+.market-detail-preview {
+  width: 100%;
+  border-radius: 8px;
+  object-fit: contain;
+  image-rendering: pixelated;
+  border: 1px solid var(--line);
+  background: var(--surface-3);
+}
+
+.market-detail-info-col {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.market-detail-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.market-detail-price {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.market-detail-desc {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink-2);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.market-detail-creator-section {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.market-detail-creator-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.market-detail-creator-name {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.market-detail-creator-btn {
+  width: auto;
+  align-self: flex-start;
+  font-size: 13px;
+  padding: 6px 14px;
+}
+
+@media (max-width: 600px) {
+  .market-detail-modal-box { max-width: 95vw; }
+  .market-detail-layout { grid-template-columns: 1fr; }
+  .market-detail-preview-col { border-right: none; border-bottom: 1px solid var(--line); }
+}
+
+/* ── 38. Market Creator Profile Modal ───────────────────── */
+.market-creator-modal-box {
+  max-width: 680px;
+}
+
+.market-creator-modal-loading {
+  padding: 48px;
+  text-align: center;
+}
+
+.market-creator-modal-body {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.market-creator-section {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.market-creator-section:first-child { padding-top: 0; }
+.market-creator-section:last-child { border-bottom: none; padding-bottom: 0; }
+
+.market-creator-section-label {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.market-creator-bio-full {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink-2);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.market-creator-designs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.market-creator-design-thumb {
+  cursor: pointer;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  transition: border-color var(--duration-fast) var(--ease-out),
+              box-shadow var(--duration-fast) var(--ease-out),
+              transform var(--duration-fast) var(--ease-out);
+  display: flex;
+  flex-direction: column;
+}
+
+.market-creator-design-thumb:hover {
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  transform: translateY(-1px);
+}
+
+.market-creator-design-thumb-img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  background: var(--surface-3);
+  image-rendering: pixelated;
+  border-bottom: 1px solid var(--line);
+}
+
+.market-creator-design-thumb-placeholder {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: var(--surface-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid var(--line);
+}
+
+.market-creator-design-thumb-title {
+  margin: 0;
+  padding: 6px 8px 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.market-creator-design-thumb-price {
+  margin: 0;
+  padding: 0 8px 6px;
+  font-size: 11px;
+  color: var(--primary);
+  font-weight: 600;
 }

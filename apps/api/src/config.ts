@@ -10,7 +10,7 @@ export const config = {
   port: Number(process.env.PORT ?? 8787),
   corsOriginList: String(
     process.env.CORS_ORIGIN ??
-      'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173'
+      'http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:5175,http://127.0.0.1:5175'
   )
     .split(',')
     .map((x) => x.trim())

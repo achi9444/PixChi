@@ -72,6 +72,7 @@ type ConversionPanelProps = {
   onConvert: () => void;
   onResetAll: () => void;
   convertProgress: { running: boolean; phase: string; percent: number };
+  paletteReady: boolean;
   // oversize
   oversizePlan: OversizePlan | null;
   onApplyOversizeSuggest: () => void;
@@ -106,6 +107,7 @@ export default function ConversionPanel({
   onConvert,
   onResetAll,
   convertProgress,
+  paletteReady,
   oversizePlan,
   onApplyOversizeSuggest,
   onApplyOversizeLargeMode,
@@ -134,7 +136,7 @@ export default function ConversionPanel({
 
       {/* ── 顏色合併強度 ── */}
       <div className="inline-field">
-        <span>顏色合併強度</span>
+        <span>合併相近色</span>
         <input
           type="number"
           min={0}
@@ -145,13 +147,13 @@ export default function ConversionPanel({
         />
       </div>
       <div className="hint">
-        0 為關閉；數值越高，越多相近色會合併成同色，讓配色更簡潔。
+        0 = 不合色；數值越高，越多相近色合成一色，配色更簡潔。
       </div>
 
       {/* ── 主要操作按鈕 ── */}
       <div className="row two">
-        <button className="primary" onClick={onConvert}>
-          開始轉換
+        <button className="primary" onClick={onConvert} disabled={convertProgress.running || !paletteReady} title={!paletteReady ? '色庫載入中…' : undefined}>
+          {!paletteReady ? '載入中…' : '開始轉換'}
         </button>
         <button className="ghost" onClick={onResetAll}>
           清空結果

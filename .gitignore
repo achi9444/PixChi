@@ -14,3 +14,6 @@ dist/
 Thumbs.db
 *.db
 apps/api/backups/
+.mcp.json
+.claude/
+.playwright-mcp/

@@ -96,6 +96,7 @@ export type LeftSidebarProps = {
   onConvert: () => void;
   onResetAll: () => void;
   convertProgress: { running: boolean; phase: string; percent: number };
+  paletteReady: boolean;
   oversizePlan: OversizePlan | null;
   onApplyOversizeSuggest: () => void;
   onApplyOversizeLargeMode: () => void;
@@ -565,7 +566,6 @@ function SettingsSection({
 type SidebarTab = 'file' | 'convert' | 'construction' | 'settings';
 
 const STORAGE_TAB_KEY = 'pixchi-sidebar-tab';
-const STORAGE_OPEN_KEY = 'pixchi-sidebar-open';
 
 export default function LeftSidebar(props: LeftSidebarProps) {
   const [activeTab, setActiveTab] = useState<SidebarTab>(() => {
@@ -577,10 +577,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
     if (stored === 'settings') return 'settings';
     return 'convert';
   });
-  const [isOpen, setIsOpen] = useState(() => {
-    const stored = localStorage.getItem(STORAGE_OPEN_KEY);
-    return stored === 'true';
-  });
+  const [isOpen, setIsOpen] = useState(false);
   const [statsMobileOpen, setStatsMobileOpen] = useState(false);
   const [toolParamOpen, setToolParamOpen] = useState<'paint' | 'erase' | 'bucket' | null>(null);
   const sc = props.shortcutConfig;
@@ -626,7 +623,6 @@ export default function LeftSidebar(props: LeftSidebarProps) {
   const sidebarRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { localStorage.setItem(STORAGE_TAB_KEY, activeTab); }, [activeTab]);
-  useEffect(() => { localStorage.setItem(STORAGE_OPEN_KEY, String(isOpen)); }, [isOpen]);
   useEffect(() => { if (props.collapseSignal) setIsOpen(false); }, [props.collapseSignal]);
 
   useEffect(() => {
@@ -679,6 +675,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
     onConvert: props.onConvert,
     onResetAll: props.onResetAll,
     convertProgress: props.convertProgress,
+    paletteReady: props.paletteReady,
     oversizePlan: props.oversizePlan,
     onApplyOversizeSuggest: props.onApplyOversizeSuggest,
     onApplyOversizeLargeMode: props.onApplyOversizeLargeMode,
@@ -750,6 +747,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
                 >
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m19 11-8-8-8.5 8.5a5.5 5.5 0 0 0 7.78 7.78L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/></svg>
                 </button>
+                <IconButton icon={<IconConstruction />} label="施工" active={props.constructionPanelVisible} onClick={props.onConstructionPanelToggle} tooltip="施工面板與顯示設定" />
                 {props.editColorHex && (
                   <span
                     className="color-indicator clickable"
@@ -773,7 +771,6 @@ export default function LeftSidebar(props: LeftSidebarProps) {
           </>
         )}
         <div className="sidebar-tool-divider" aria-hidden="true" />
-        <IconButton icon={<IconConstruction />} label="施工" active={props.constructionPanelVisible} onClick={props.onConstructionPanelToggle} tooltip="施工面板與顯示設定" />
         <IconButton icon={<IconSettings />} label="設定" active={isOpen && activeTab === 'settings'} onClick={() => handleTabClick('settings')} tooltip="快捷鍵與歷史" />
         <div className="sidebar-tool-divider stats-mobile-only" aria-hidden="true" />
         <button

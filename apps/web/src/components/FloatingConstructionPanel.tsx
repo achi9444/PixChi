@@ -5,6 +5,8 @@ import ConstructionPanel, { type ConstructionTask, type ConstructionOrderRule, t
 type FloatingConstructionPanelProps = {
   visible: boolean;
   onClose: () => void;
+  zIndex?: number;
+  onBringToFront?: () => void;
   proMode: boolean;
   showCode: boolean;
   onShowCodeChange: (v: boolean) => void;
@@ -45,25 +47,28 @@ type FloatingConstructionPanelProps = {
   onSetFocusFromTask: (id: string) => void;
 };
 
-const DEFAULT_POS = { x: 80, y: 80 };
+const getDefaultPos = () => ({ x: 88, y: Math.max(180, window.innerHeight - 510) });
 const DEFAULT_SIZE = { w: 360, h: 480 };
 const MIN_W = 260, MAX_W = 560, MIN_H = 240;
 
 export default function FloatingConstructionPanel({
   visible,
   onClose,
+  zIndex,
+  onBringToFront,
   ...panelProps
 }: FloatingConstructionPanelProps) {
-  const [pos, setPos] = useState(DEFAULT_POS);
+  const [pos, setPos] = useState(getDefaultPos);
   const [size, setSize] = useState(DEFAULT_SIZE);
   const [minimized, setMinimized] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
+  const miniDraggedRef = useRef(false);
   const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   const handleClose = useCallback(() => {
     onClose();
-    setPos(DEFAULT_POS);
+    setPos(getDefaultPos);
     setSize(DEFAULT_SIZE);
     setMinimized(false);
   }, [onClose]);
@@ -93,6 +98,7 @@ export default function FloatingConstructionPanel({
 
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    onBringToFront?.();
     dragRef.current = { startX: e.clientX, startY: e.clientY, startPosX: pos.x, startPosY: pos.y };
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return;
@@ -130,15 +136,26 @@ export default function FloatingConstructionPanel({
     return createPortal(
       <div
         className="floating-panel-mini"
-        style={{ left: pos.x, top: pos.y }}
-        onClick={() => setMinimized(false)}
-        onMouseDown={onDragStart}
+        style={{ left: pos.x, top: pos.y, zIndex: zIndex ?? 500 }}
+        onClick={() => { if (!miniDraggedRef.current) setMinimized(false); }}
+        onMouseDown={(e) => {
+          onBringToFront?.();
+          miniDraggedRef.current = false;
+          const startX = e.clientX, startY = e.clientY;
+          const onMove = (ev: MouseEvent) => {
+            if (Math.abs(ev.clientX - startX) > 4 || Math.abs(ev.clientY - startY) > 4) {
+              miniDraggedRef.current = true;
+            }
+          };
+          window.addEventListener('mousemove', onMove, { once: false });
+          window.addEventListener('mouseup', () => window.removeEventListener('mousemove', onMove), { once: true });
+          onDragStart(e);
+        }}
         title={`施工面板 — ${completionText}`}
       >
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
         </svg>
-        <span style={{ fontSize: 11 }}>{completionText}</span>
       </div>,
       document.body,
     );
@@ -148,7 +165,7 @@ export default function FloatingConstructionPanel({
     <div
       className="floating-panel"
       ref={panelRef}
-      style={{ left: pos.x, top: pos.y, width: size.w, height: size.h, display: 'flex', flexDirection: 'column' }}
+      style={{ left: pos.x, top: pos.y, width: size.w, height: size.h, display: 'flex', flexDirection: 'column', zIndex: zIndex ?? 500 }}
     >
       <div className="floating-panel-titlebar" onMouseDown={onDragStart}>
         <span className="floating-panel-title">施工面板</span>

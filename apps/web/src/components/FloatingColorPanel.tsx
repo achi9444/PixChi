@@ -38,9 +38,11 @@ type FloatingColorPanelProps = {
   // actions
   onReplaceAllSameColor: () => void;
   onAddOneCellOutline: () => void;
+  zIndex?: number;
+  onBringToFront?: () => void;
 };
 
-const DEFAULT_POS = { x: 300, y: 80 };
+const getDefaultPos = () => ({ x: 108, y: Math.max(160, window.innerHeight - 420) });
 const DEFAULT_SIZE = { w: 256, h: 360 };
 const MIN_W = 220, MAX_W = 400, MIN_H = 200;
 
@@ -98,8 +100,10 @@ export default function FloatingColorPanel({
   onPaletteSearchChange,
   onReplaceAllSameColor,
   onAddOneCellOutline,
+  zIndex,
+  onBringToFront,
 }: FloatingColorPanelProps) {
-  const [pos, setPos] = useState(DEFAULT_POS);
+  const [pos, setPos] = useState(getDefaultPos);
   const [size, setSize] = useState(DEFAULT_SIZE);
   const [minimized, setMinimized] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
@@ -111,7 +115,7 @@ export default function FloatingColorPanel({
   // Reset position & size on close
   const handleClose = useCallback(() => {
     onClose();
-    setPos(DEFAULT_POS);
+    setPos(getDefaultPos);
     setSize(DEFAULT_SIZE);
     setMinimized(false);
   }, [onClose]);
@@ -143,6 +147,7 @@ export default function FloatingColorPanel({
   // Drag handling
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    onBringToFront?.();
     dragRef.current = { startX: e.clientX, startY: e.clientY, startPosX: pos.x, startPosY: pos.y };
     const onMove = (ev: MouseEvent) => {
       if (!dragRef.current) return;
@@ -179,9 +184,9 @@ export default function FloatingColorPanel({
     return (
       <div
         className="floating-panel-mini"
-        style={{ left: pos.x, top: pos.y }}
+        style={{ left: pos.x, top: pos.y, zIndex: zIndex ?? 500 }}
         onClick={() => setMinimized(false)}
-        onMouseDown={onDragStart}
+        onMouseDown={(e) => { onBringToFront?.(); onDragStart(e); }}
         title={selectedEditColor ? `修色面板 — ${selectedEditColor.name}` : '修色面板'}
       >
         <span
@@ -196,7 +201,7 @@ export default function FloatingColorPanel({
   }
 
   return (
-    <div className="floating-panel" ref={panelRef} style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}>
+    <div className="floating-panel" ref={panelRef} style={{ left: pos.x, top: pos.y, width: size.w, height: size.h, zIndex: zIndex ?? 500 }}>
       {/* Title bar — draggable */}
       <div className="floating-panel-titlebar" onMouseDown={onDragStart}>
         <span className="floating-panel-title">修色面板</span>
@@ -265,13 +270,13 @@ export default function FloatingColorPanel({
         </label>
 
         <label className="switch-row" style={{ minHeight: 28, fontSize: 12 }}>
-          鄰近色模式
+          同時選取相近色
           <input type="checkbox" checked={focusNeighborEnabled} disabled={constructionMode} onChange={(e) => onFocusNeighborEnabledChange(e.target.checked)} />
         </label>
         {focusNeighborEnabled && !constructionMode && (
           <div className="inline-field" style={{ marginBottom: 4 }}>
-            <span>DeltaE</span>
-            <input type="number" min={1} max={50} step={0.5} value={focusNeighborDeltaE} onChange={(e) => onFocusNeighborDeltaEChange(Math.max(1, Math.min(50, Number(e.target.value) || 1)))} />
+            <span>相近色範圍</span>
+            <input type="number" min={1} max={10} step={0.5} value={focusNeighborDeltaE} onChange={(e) => onFocusNeighborDeltaEChange(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} />
           </div>
         )}
 

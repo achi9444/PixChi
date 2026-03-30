@@ -105,7 +105,7 @@ type ConstructionTemplate = {
 
 const MAX_GRID_SIZE = 10000;
 const GRID_SOFT_LIMIT = 40000;
-const PRE_MERGE_DELTAE_MAX = 30;
+const PRE_MERGE_DELTAE_MAX = 10;
 const PIXCHI_META_PREFIX = 'PIXCHI_META_V1:';
 const EMPTY_EDIT_COLOR_NAME = '__EMPTY__';
 const EMPTY_EDIT_COLOR = { name: '無', hex: '#FFFFFF' };
@@ -358,6 +358,10 @@ export default function App() {
   const [editColorMenuOpen, setEditColorMenuOpen] = useState(false);
   const [colorPanelVisible, setColorPanelVisible] = useState(false);
   const [constructionPanelVisible, setConstructionPanelVisible] = useState(false);
+  const [panelStack, setPanelStack] = useState<Array<'color' | 'construction'>>([]);
+  const bringPanelToFront = useCallback((id: 'color' | 'construction') => {
+    setPanelStack(prev => [...prev.filter(p => p !== id), id]);
+  }, []);
   const [sidebarCollapseSignal, setSidebarCollapseSignal] = useState(0);
   const [focusColorName, setFocusColorName] = useState('');
   const [focusColorSearch, setFocusColorSearch] = useState('');
@@ -1507,7 +1511,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       return;
     }
     if (editColorName === EMPTY_EDIT_COLOR_NAME) return;
-    if (!colors.some((c) => c.name === editColorName)) setEditColorName(colors[0].name);
+    if (!colors.some((c) => c.name === editColorName)) setEditColorName(EMPTY_EDIT_COLOR_NAME);
   }, [activeGroup, editColorName]);
 
   useEffect(() => {
@@ -1545,7 +1549,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     canvas.width = width;
     canvas.height = height;
 
-    if (!converted || (cropToolEnabled && imageBitmap)) {
+    if (!converted) {
       ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, width, height);
@@ -1730,7 +1734,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     }
 
     const guideStep = Math.max(1, Math.floor(guideEvery));
-    if (proMode && showGuide) {
+    if (showGuide) {
       ctx.save();
       ctx.strokeStyle = '#8ea39a';
       ctx.lineWidth = 1.5;
@@ -1751,7 +1755,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       ctx.restore();
     }
 
-    if (proMode && showRuler) {
+    if (showRuler) {
       ctx.save();
       ctx.fillStyle = '#ffffffd9';
       ctx.fillRect(ox, Math.max(0, oy - 20), viewCols * cell, 20);
@@ -2190,6 +2194,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setGridMeta(`${finalCols} x ${finalRows}（空白畫布）`);
     setImageMeta('無來源圖');
     setStatusText(`已建立 ${finalCols}×${finalRows} 空白畫布。`);
+    setSidebarCollapseSignal((s) => s + 1);
   };
 
   const resizeBlankCanvas = (newCols: number, newRows: number) => {
@@ -2295,8 +2300,19 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (isCropDraggingRef.current) return; // 拖曳中由另一個 handler 處理
 
-      // 圖片裁切模式
-      if (cropToolEnabled && imageBitmap) {
+      // 轉換後格線裁切模式（優先）
+      if (gridCropRect && converted && cropToolEnabled) {
+        ev.preventDefault();
+        if (ev.key === 'Enter') {
+          applyGridCrop();
+        } else {
+          setGridCropRect(null);
+        }
+        return;
+      }
+
+      // 轉換前圖片裁切模式
+      if (cropToolEnabled && imageBitmap && !converted) {
         const isTrimmed = cropRect && (
           cropRect.x !== 0 || cropRect.y !== 0 ||
           cropRect.w !== imageBitmap.width || cropRect.h !== imageBitmap.height
@@ -2307,17 +2323,6 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           void applyImageCrop();
         } else {
           setCropRect({ x: 0, y: 0, w: imageBitmap.width, h: imageBitmap.height });
-        }
-        return;
-      }
-
-      // 格線裁切模式
-      if (gridCropRect && converted && cropToolEnabled) {
-        ev.preventDefault();
-        if (ev.key === 'Enter') {
-          applyGridCrop();
-        } else {
-          setGridCropRect(null);
         }
       }
     };
@@ -3319,8 +3324,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     if (preflight) { setStatusText(`匯出前檢查失敗：${preflight}`); return; }
     const canvas = buildExportGridCanvas(converted!, showCode, PDF_BEAD_MM, {
       exportScale,
-      showRuler: proMode && showRuler,
-      showGuide: proMode && showGuide,
+      showRuler: showRuler,
+      showGuide: showGuide,
       guideEvery,
     });
     const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
@@ -3892,6 +3897,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           converted={!!converted}
           proMode={proMode}
           statusText={statusText}
+          paletteReady={!!activeGroup}
           groups={groups}
           activeGroupName={activeGroupName}
           onActiveGroupNameChange={setActiveGroupName}
@@ -4024,7 +4030,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onEditToolChange={setEditTool}
           editColorHex={selectedEditColor?.hex ?? null}
           editColorName={selectedEditColor?.name ?? ''}
-          onColorPanelToggle={() => setColorPanelVisible((v) => !v)}
+          onColorPanelToggle={() => { setColorPanelVisible((v) => !v); bringPanelToFront('color'); }}
           onUndo={undo}
           onRedo={redo}
           hasImageBitmap={!!imageBitmap}
@@ -4034,7 +4040,11 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onBucketModeChange={setBucketMode}
           onCropToolEnabledChange={(v) => {
             setCropToolEnabled(v);
-            if (!v) setGridCropRect(null);
+            if (v && converted) {
+              setGridCropRect({ x: 0, y: 0, w: converted.cols, h: converted.rows });
+            } else {
+              setGridCropRect(null);
+            }
           }}
           hasCropRect={!!cropRect && !!imageBitmap ? (cropRect.x !== 0 || cropRect.y !== 0 || cropRect.w !== imageBitmap.width || cropRect.h !== imageBitmap.height) : false}
           gridCropActive={!!gridCropRect && !!converted && cropToolEnabled}
@@ -4046,7 +4056,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onApplyCrop={() => void applyImageCrop()}
           collapseSignal={sidebarCollapseSignal}
           constructionPanelVisible={constructionPanelVisible}
-          onConstructionPanelToggle={() => setConstructionPanelVisible((v) => !v)}
+          onConstructionPanelToggle={() => { setConstructionPanelVisible((v) => !v); bringPanelToFront('construction'); }}
         />
 
         <CanvasPanel
@@ -4112,7 +4122,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           hasCropRect={!!cropRect && imageBitmap ? (cropRect.x !== 0 || cropRect.y !== 0 || cropRect.w !== imageBitmap.width || cropRect.h !== imageBitmap.height) : false}
           gridCropActive={!!gridCropRect && !!converted && cropToolEnabled}
           onApplyGridCrop={applyGridCrop}
-          onColorPanelToggle={() => setColorPanelVisible((v) => !v)}
+          onColorPanelToggle={() => { setColorPanelVisible((v) => !v); bringPanelToFront('color'); }}
           largeGridMode={largeGridMode}
           largeViewTilePage={largeViewTilePage}
           proMode={proMode}
@@ -4182,10 +4192,14 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         onPaletteSearchChange={setPaletteSearch}
         onReplaceAllSameColor={replaceAllSameColor}
         onAddOneCellOutline={addOneCellOutline}
+        zIndex={500 + panelStack.indexOf('color')}
+        onBringToFront={() => bringPanelToFront('color')}
       />
       <FloatingConstructionPanel
         visible={constructionPanelVisible}
         onClose={() => setConstructionPanelVisible(false)}
+        zIndex={500 + panelStack.indexOf('construction')}
+        onBringToFront={() => bringPanelToFront('construction')}
         proMode={proMode}
         showCode={showCode}
         onShowCodeChange={setShowCode}

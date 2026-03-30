@@ -150,7 +150,7 @@ export default function ColorEditPanel({
         </div>
       </label>
       <label className="switch-row">
-        焦點鄰近色模式（DeltaE）
+        同時選取相近色
         <input
           type="checkbox"
           checked={focusNeighborEnabled}
@@ -160,14 +160,14 @@ export default function ColorEditPanel({
       </label>
       {focusNeighborEnabled && !constructionMode && (
         <label>
-          鄰近色門檻 DeltaE
+          相近色範圍
           <input
             type="number"
             min={1}
-            max={50}
+            max={10}
             step={0.5}
             value={focusNeighborDeltaE}
-            onChange={(e) => onFocusNeighborDeltaEChange(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+            onChange={(e) => onFocusNeighborDeltaEChange(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
           />
         </label>
       )}
