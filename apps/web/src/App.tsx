@@ -48,9 +48,27 @@ type CellChange = {
   after: Cell;
 };
 
+type CropChange = {
+  before: CropRect | null;
+  after: CropRect | null;
+};
+
+type BulkSnapshot = {
+  imageBitmap?: ImageBitmap;
+  imageDataUrl?: string;
+  cropRect?: CropRect | null;
+  converted?: Converted | null;
+  cols?: number;
+  rows?: number;
+  imageMeta?: string;
+  gridMeta?: string;
+};
+
 type ChangeBatch = {
   label: string;
   changes: CellChange[];
+  cropChange?: CropChange;
+  bulkChange?: { before: BulkSnapshot; after: BulkSnapshot };
 };
 
 type CropRect = {
@@ -301,6 +319,8 @@ export default function App() {
   const cropDragModeRef = useRef<CropDragMode | null>(null);
   const cropStartRectRef = useRef<CropRect | null>(null);
   const isCropDraggingRef = useRef(false);
+  const cropRectRef = useRef<CropRect | null>(null);
+  const pushCropUndoRef = useRef<((b: CropRect | null, a: CropRect | null) => void) | null>(null);
   const isApplyingDraftRef = useRef(false);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestSnapshotRef = useRef<DraftSnapshot | null>(null);
@@ -1782,21 +1802,34 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
 
     if (showRuler) {
       ctx.save();
+      const rulerW = Math.max(0, ox - 2);
+      const rulerH = Math.max(0, oy - 2);
+      const gridPxW = viewCols * cell;
+      const gridPxH = viewRows * cell;
+      const rightX = ox + gridPxW;
+      const bottomY = oy + gridPxH;
       ctx.fillStyle = '#ffffffd9';
-      ctx.fillRect(ox, Math.max(0, oy - 20), viewCols * cell, 20);
-      ctx.fillRect(Math.max(0, ox - 28), oy, 28, viewRows * cell);
+      ctx.fillRect(ox, Math.max(0, oy - rulerH), gridPxW, rulerH);           // top
+      ctx.fillRect(Math.max(0, ox - rulerW), oy, rulerW, gridPxH);            // left
+      ctx.fillRect(rightX, oy, rulerW, gridPxH);                               // right
+      ctx.fillRect(ox, bottomY, gridPxW, rulerH);                              // bottom
       ctx.fillStyle = '#465a52';
       ctx.font = '11px Segoe UI';
-      ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
       for (let gx = 0; gx <= viewCols; gx += guideStep) {
         const x = ox + gx * cell;
-        ctx.fillText(String(viewStartCol + gx), x, Math.max(10, oy - 10));
+        const label = String(viewStartCol + gx);
+        ctx.fillText(label, x, Math.max(10, oy - rulerH / 2));                // top
+        ctx.fillText(label, x, bottomY + rulerH / 2);                          // bottom
       }
-      ctx.textAlign = 'right';
       for (let gy = 0; gy <= viewRows; gy += guideStep) {
         const y = oy + gy * cell;
-        ctx.fillText(String(viewStartRow + gy), Math.max(20, ox - 6), y);
+        const label = String(viewStartRow + gy);
+        ctx.textAlign = 'right';
+        ctx.fillText(label, Math.max(18, ox - 4), y);                          // left
+        ctx.textAlign = 'left';
+        ctx.fillText(label, rightX + 4, y);                                    // right
       }
       ctx.restore();
     }
@@ -1984,6 +2017,14 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
 
   useEffect(() => {
     const onMouseUp = () => {
+      if (isCropDraggingRef.current && cropStartRectRef.current) {
+        const before = cropStartRectRef.current;
+        const after = cropRectRef.current;
+        const changed = !after || !before ||
+          before.x !== after.x || before.y !== after.y ||
+          before.w !== after.w || before.h !== after.h;
+        if (changed) pushCropUndoRef.current?.(before, after);
+      }
       isPointerDownRef.current = false;
       lastDragCellIdxRef.current = null;
       panLastPointRef.current = null;
@@ -2268,14 +2309,17 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       return c;
     })();
     const newDataUrl = offscreen.toDataURL('image/webp', 0.9) || offscreen.toDataURL('image/png');
+    const before: BulkSnapshot = { imageBitmap, imageDataUrl: imageDataUrl ?? undefined, cropRect, converted, cols, rows, imageMeta, gridMeta };
+    const newCropRect: CropRect = { x: 0, y: 0, w, h };
+    const after: BulkSnapshot = { imageBitmap: newBitmap, imageDataUrl: newDataUrl, cropRect: newCropRect, converted: null, cols: w, rows: h, imageMeta: `來源圖：${w} x ${h}（已裁切）`, gridMeta: '-' };
     setImageBitmap(newBitmap);
     setImageDataUrl(newDataUrl);
-    setCropRect({ x: 0, y: 0, w, h });
+    setCropRect(newCropRect);
     setCols(w);
     setRows(h);
     setConverted(null);
     setGridMeta('-');
-    setUndoStack([]);
+    setUndoStack((prev) => [...prev, { changes: [], label: '套用裁切', bulkChange: { before, after } }]);
     setRedoStack([]);
     setImageMeta(`來源圖：${w} x ${h}（已裁切）`);
     setStatusText(`已套用裁切：${w} x ${h}`);
@@ -2306,14 +2350,17 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         }
       }
     }
-    setConverted({ ...converted, cols: newCols, rows: newRows, cells: newCells });
+    const before: BulkSnapshot = { converted, cols, rows, gridMeta };
+    const newConverted = { ...converted, cols: newCols, rows: newRows, cells: newCells };
+    const after: BulkSnapshot = { converted: newConverted, cols: newCols, rows: newRows, gridMeta: `${newCols} x ${newRows}` };
+    setConverted(newConverted);
     setCols(newCols);
     setRows(newRows);
     setGridCropRect(null);
     setCropToolEnabled(false);
     setGridMeta(`${newCols} x ${newRows}`);
     setStatusText(`已套用格線裁切：${newCols} x ${newRows}`);
-    setUndoStack([]);
+    setUndoStack((prev) => [...prev, { changes: [], label: '套用格線裁切', bulkChange: { before, after } }]);
     setRedoStack([]);
   };
 
@@ -2368,6 +2415,14 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setRedoStack([]);
     addHistory(label);
   };
+
+  const pushCropUndo = (before: CropRect | null, after: CropRect | null) => {
+    setUndoStack((prev) => [...prev, { changes: [], label: '調整裁切範圍', cropChange: { before, after } }]);
+    setRedoStack([]);
+    addHistory('調整裁切範圍');
+  };
+  pushCropUndoRef.current = pushCropUndo;
+  cropRectRef.current = cropRect;
 
   const getCellIndexByPointer = (clientX: number, clientY: number) => {
     if (!converted) return null;
@@ -3172,27 +3227,50 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setStatusText(`已刪除施工模板${tpl ? `：${tpl.name}` : ''}`);
   };
 
+  const applyBulkSnapshot = (snap: BulkSnapshot) => {
+    if (snap.imageBitmap !== undefined) setImageBitmap(snap.imageBitmap);
+    if (snap.imageDataUrl !== undefined) setImageDataUrl(snap.imageDataUrl);
+    if ('cropRect' in snap) setCropRect(snap.cropRect ?? null);
+    if ('converted' in snap) setConverted(snap.converted ?? null);
+    if (snap.cols !== undefined) setCols(snap.cols);
+    if (snap.rows !== undefined) setRows(snap.rows);
+    if (snap.imageMeta !== undefined) setImageMeta(snap.imageMeta);
+    if (snap.gridMeta !== undefined) setGridMeta(snap.gridMeta);
+  };
+
   const undo = () => {
-    if (!undoStack.length || !converted) return;
+    if (!undoStack.length) return;
     const batch = undoStack[undoStack.length - 1];
-    const changes = batch.changes;
-    const nextCells = [...converted.cells];
-    for (const ch of changes) nextCells[ch.idx] = { ...ch.before };
-    setConverted({ ...converted, cells: nextCells });
     setUndoStack((prev) => prev.slice(0, -1));
     setRedoStack((prev) => [...prev, batch]);
+    if (batch.bulkChange) {
+      applyBulkSnapshot(batch.bulkChange.before);
+    } else {
+      if (batch.changes.length > 0 && converted) {
+        const nextCells = [...converted.cells];
+        for (const ch of batch.changes) nextCells[ch.idx] = { ...ch.before };
+        setConverted({ ...converted, cells: nextCells });
+      }
+      if (batch.cropChange !== undefined) setCropRect(batch.cropChange.before);
+    }
     addHistory(`Undo：${batch.label}`);
   };
 
   const redo = () => {
-    if (!redoStack.length || !converted) return;
+    if (!redoStack.length) return;
     const batch = redoStack[redoStack.length - 1];
-    const changes = batch.changes;
-    const nextCells = [...converted.cells];
-    for (const ch of changes) nextCells[ch.idx] = { ...ch.after };
-    setConverted({ ...converted, cells: nextCells });
     setRedoStack((prev) => prev.slice(0, -1));
     setUndoStack((prev) => [...prev, batch]);
+    if (batch.bulkChange) {
+      applyBulkSnapshot(batch.bulkChange.after);
+    } else {
+      if (batch.changes.length > 0 && converted) {
+        const nextCells = [...converted.cells];
+        for (const ch of batch.changes) nextCells[ch.idx] = { ...ch.after };
+        setConverted({ ...converted, cells: nextCells });
+      }
+      if (batch.cropChange !== undefined) setCropRect(batch.cropChange.after);
+    }
     addHistory(`Redo：${batch.label}`);
   };
 
@@ -3347,13 +3425,23 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   const exportJpeg = () => {
     const preflight = runExportPreflight('pdf');
     if (preflight) { setStatusText(`匯出前檢查失敗：${preflight}`); return; }
-    const canvas = buildExportGridCanvas(converted!, showCode, PDF_BEAD_MM, {
+    const gridCanvas = buildExportGridCanvas(converted!, showCode, PDF_BEAD_MM, {
       exportScale,
       showRuler: showRuler,
       showGuide: showGuide,
       guideEvery,
     });
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    const statsCanvas = buildStatsCirclesCanvas(statsRows, exportScale, gridCanvas.width);
+    const gapPx = Math.round(32 * exportScale);
+    const combined = document.createElement('canvas');
+    combined.width = gridCanvas.width;
+    combined.height = gridCanvas.height + gapPx + statsCanvas.height + Math.round(16 * exportScale);
+    const ctx = combined.getContext('2d')!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, combined.width, combined.height);
+    ctx.drawImage(gridCanvas, 0, 0);
+    ctx.drawImage(statsCanvas, 0, gridCanvas.height + gapPx);
+    const dataUrl = combined.toDataURL('image/jpeg', 0.92);
     const a = document.createElement('a');
     a.href = dataUrl;
     a.download = `${safeFileName(projectName)}-pattern.jpg`;
@@ -3428,35 +3516,35 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         });
       };
 
-      const drawSideStats = (page: any, tx: number, contentTop: number) => {
-        let ty = contentTop - 14;
-        const colorColW = sideTableWidth * 0.62;
-        const countColW = sideTableWidth - colorColW;
-        const centerColor = tx + colorColW / 2;
-        const centerCount = tx + colorColW + countColW / 2;
-        page.drawRectangle({ x: tx, y: ty - 6, width: sideTableWidth, height: 18, borderWidth: 1, borderColor: rgb(0.8, 0.86, 0.83), color: rgb(0.93, 0.96, 0.94) });
-        page.drawLine({ start: { x: tx + colorColW, y: ty - 6 }, end: { x: tx + colorColW, y: ty + 12 }, thickness: 1, color: rgb(0.8, 0.86, 0.83) });
-        const h1 = '色號';
-        const h2 = '數量';
-        const h1W = cjk ? cjk.widthOfTextAtSize(h1, 10) : bold.widthOfTextAtSize('Color', 10);
-        const h2W = cjk ? cjk.widthOfTextAtSize(h2, 10) : bold.widthOfTextAtSize('Count', 10);
-        drawPdfTextPreferCjk(page, h1, centerColor - h1W / 2, ty, 10, bold, cjk);
-        drawPdfTextPreferCjk(page, h2, centerCount - h2W / 2, ty, 10, bold, cjk);
-        ty -= 22;
+      const drawStatsCircles = (page: any, tx: number, contentTop: number, availW: number) => {
+        const circleR = 16;
+        const nameSize = 9;
+        const countSize = 8;
+        const cellH = circleR * 2 + 5 + countSize + 8;
+        const minCellW = circleR * 2 + 14;
+        const cols = Math.max(1, Math.floor(availW / minCellW));
+        const cellW = availW / cols;
+        let i = 0;
         for (const r of statsRows) {
-          if (ty < margin + 10) break;
-          page.drawRectangle({ x: tx, y: ty - 6, width: sideTableWidth, height: 18, borderWidth: 1, borderColor: rgb(0.88, 0.92, 0.9) });
-          page.drawLine({ start: { x: tx + colorColW, y: ty - 6 }, end: { x: tx + colorColW, y: ty + 12 }, thickness: 1, color: rgb(0.88, 0.92, 0.9) });
-          const nameW = measurePdfTextMixed(r.name, 10, latin, cjk);
-          const beadGap = 11;
-          const totalW = beadGap + nameW;
-          const startX = centerColor - totalW / 2;
-          drawPdfBead(page, startX + 4.5, ty + 2, r.hex, rgb);
-          drawPdfTextMixed(page, r.name, startX + beadGap, ty, 10, latin, cjk);
-          const countText = String(r.count);
-          page.drawText(countText, { x: centerCount - font.widthOfTextAtSize(countText, 10) / 2, y: ty, size: 10, font });
-          ty -= 18;
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          const cx = tx + col * cellW + cellW / 2;
+          const cy = contentTop - circleR - row * cellH;
+          if (cy - circleR - 5 - countSize < margin) break;
+          const [rr, gg, bb] = hexToRgb(r.hex);
+          page.drawCircle({ x: cx, y: cy, size: circleR, color: rgb(rr / 255, gg / 255, bb / 255) });
+          const isDark = 0.299 * rr + 0.587 * gg + 0.114 * bb > 145;
+          const nameColor = isDark ? rgb(0.1, 0.1, 0.1) : rgb(1, 1, 1);
+          const nameW = latin.widthOfTextAtSize(r.name, nameSize);
+          page.drawText(r.name, { x: cx - nameW / 2, y: cy - nameSize * 0.38, size: nameSize, font: latin, color: nameColor });
+          const countStr = String(r.count);
+          const countW = latin.widthOfTextAtSize(countStr, countSize);
+          page.drawText(countStr, { x: cx - countW / 2, y: cy - circleR - 4 - countSize, size: countSize, font, color: rgb(0.3, 0.3, 0.3) });
+          i++;
         }
+      };
+      const drawSideStats = (page: any, tx: number, contentTop: number, availW?: number) => {
+        drawStatsCircles(page, tx, contentTop, availW ?? sideTableWidth);
       };
 
       const patternWidthMm = converted.cols * beadMm;
@@ -3483,21 +3571,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         if (hasRightSpace) {
           drawSideStats(page, margin + patternWPt + gap, contentTop);
         } else {
-          const startY = patternY - 12;
-          const colW = mmToPt(38);
-          const rowH = 16;
-          const colsPerRow = Math.max(1, Math.floor(usableW / colW));
-          statsRows.forEach((r, idx) => {
-            const col = idx % colsPerRow;
-            const row = Math.floor(idx / colsPerRow);
-            const x = margin + col * colW;
-            const y = startY - row * rowH;
-            if (y < margin + 8) return;
-            page.drawRectangle({ x, y: y - 6, width: colW - 2, height: 14, borderWidth: 1, borderColor: rgb(0.83, 0.88, 0.86) });
-            drawPdfBead(page, x + 6, y + 1, r.hex, rgb);
-            drawPdfTextMixed(page, r.name, x + 14, y, 9, latin, cjk);
-            page.drawText(String(r.count), { x: x + colW - 20, y, size: 9, font: bold });
-          });
+          drawStatsCircles(page, margin, patternY - 16, usableW);
         }
         drawGuestWatermark(page);
       } else {
@@ -3523,14 +3597,9 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           }
         }
 
-        // Summary page with stats
-        const summary = pdfDoc.addPage([pageW, pageH]);
-        drawHeader(
-          summary,
-          `群組：${activeGroup?.name ?? ''} | 格線：${converted.cols}x${converted.rows} | 自動分頁 ${xPages}x${yPages} | 匯出頁 ${from}-${to}/${totalTiles}`
-        );
-        drawSideStats(summary, margin, pageH - margin - headerH - 8);
-        drawGuestWatermark(summary);
+        let firstTilePage: any = null;
+        let firstTileDrawW = 0;
+        let firstTilePatternY = 0;
 
         for (const tile of exportTiles) {
           const slice = sliceConverted(converted, tile.startCol, tile.startRow, tile.colsPart, tile.rowsPart);
@@ -3546,9 +3615,27 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           drawHeader(page, partText);
           const drawW = mmToPt(tile.colsPart * beadMm);
           const drawH = mmToPt(tile.rowsPart * beadMm);
-          const y = contentTop - drawH;
-          page.drawImage(tileImg, { x: margin, y, width: drawW, height: drawH });
+          const tileY = contentTop - drawH;
+          page.drawImage(tileImg, { x: margin, y: tileY, width: drawW, height: drawH });
+          if (!firstTilePage) { firstTilePage = page; firstTileDrawW = drawW; firstTilePatternY = tileY; }
           drawGuestWatermark(page);
+        }
+
+        // Draw stats: prefer right of first tile → below first tile → new page
+        if (firstTilePage) {
+          if (firstTileDrawW + gap + sideTableWidth <= usableW) {
+            drawSideStats(firstTilePage, margin + firstTileDrawW + gap, contentTop);
+          } else {
+            const spaceBelow = firstTilePatternY - margin - 12;
+            if (spaceBelow >= 50) {
+              drawStatsCircles(firstTilePage, margin, firstTilePatternY - 12, usableW);
+            } else {
+              const statsPage = pdfDoc.addPage([pageW, pageH]);
+              drawHeader(statsPage, `群組：${activeGroup?.name ?? ''} | 格線：${converted.cols}x${converted.rows} | 用料統計`);
+              drawStatsCircles(statsPage, margin, contentTop, usableW);
+              drawGuestWatermark(statsPage);
+            }
+          }
         }
       }
 
@@ -4432,6 +4519,70 @@ function getComplexityCap(totalBeads: number) {
   return tier?.cap ?? COMPLEXITY_CAP_TIERS[COMPLEXITY_CAP_TIERS.length - 1].cap;
 }
 
+function buildStatsCirclesCanvas(
+  rows: Array<{ name: string; hex: string; count: number }>,
+  scale: number,
+  targetWidth?: number
+): HTMLCanvasElement {
+  const diam = Math.round(54 * scale);
+  const cellGapY = Math.round(10 * scale);
+  const countFontSize = Math.max(9, Math.round(13 * scale));
+  const pad = Math.round(20 * scale);
+
+  let cols: number;
+  let cellW: number;
+  const canvasWidth: number = targetWidth ?? 0;
+
+  if (targetWidth && targetWidth > 0) {
+    const availW = targetWidth - pad * 2;
+    const minCellW = diam + Math.round(4 * scale);
+    cols = Math.max(1, Math.floor(availW / minCellW));
+    cellW = availW / cols;
+  } else {
+    cols = Math.min(8, Math.max(4, Math.round(Math.sqrt(rows.length) * 1.3)));
+    cellW = diam + Math.round(12 * scale);
+  }
+
+  const cellH = diam + Math.round(4 * scale) + countFontSize + cellGapY;
+  const numRows = Math.ceil(rows.length / cols);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasWidth > 0 ? canvasWidth : (cols * cellW + pad * 2);
+  canvas.height = numRows * cellH + pad * 2 - cellGapY;
+
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  rows.forEach((r, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cx = pad + col * cellW + diam / 2;
+    const cy = pad + row * cellH + diam / 2;
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, diam / 2, 0, Math.PI * 2);
+    ctx.fillStyle = r.hex;
+    ctx.fill();
+
+    const textColor = pickTextColor(r.hex);
+    const nameFontSize = Math.max(8, Math.floor(diam * 0.30));
+    ctx.font = `700 ${nameFontSize}px "Segoe UI", Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = textColor;
+    ctx.fillText(r.name, cx, cy);
+
+    ctx.font = `${countFontSize}px "Segoe UI", Arial, sans-serif`;
+    ctx.fillStyle = '#444444';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(String(r.count), cx, cy + diam / 2 + Math.round(4 * scale));
+  });
+
+  return canvas;
+}
+
 function buildExportGridCanvas(
   converted: Converted,
   showCode: boolean,
@@ -4445,11 +4596,11 @@ function buildExportGridCanvas(
   const showRuler = !!options?.showRuler;
   const showGuide = !!options?.showGuide;
   const guideEvery = Math.max(1, Math.floor(options?.guideEvery ?? 5));
-  const rulerBand = showRuler ? 24 : 0;
+  const rulerBand = showRuler ? Math.round(32 * exportScale) : 0;
 
   const canvas = document.createElement('canvas');
-  canvas.width = converted.cols * cell + pad * 2 + rulerBand;
-  canvas.height = converted.rows * cell + pad * 2 + rulerBand;
+  canvas.width = converted.cols * cell + pad * 2 + rulerBand * 2;
+  canvas.height = converted.rows * cell + pad * 2 + rulerBand * 2;
 
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = '#ffffff';
@@ -4504,21 +4655,29 @@ function buildExportGridCanvas(
 
   if (showRuler) {
     ctx.save();
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(ox, oy - rulerBand, converted.cols * cell, rulerBand);
-    ctx.fillRect(ox - rulerBand, oy, rulerBand, converted.rows * cell);
+    const gridW = converted.cols * cell;
+    const gridH = converted.rows * cell;
+    const rightX = ox + gridW;
+    const bottomY = oy + gridH;
     ctx.fillStyle = '#465a52';
-    ctx.font = '11px Segoe UI';
-    ctx.textAlign = 'center';
+    const rulerFontSize = Math.max(11, Math.round(14 * exportScale));
+    ctx.font = `${rulerFontSize}px "Segoe UI", Arial, sans-serif`;
     ctx.textBaseline = 'middle';
+    const midBand = Math.floor(rulerBand / 2);
+    ctx.textAlign = 'center';
     for (let gx = 0; gx <= converted.cols; gx += guideEvery) {
       const x = ox + gx * cell;
-      ctx.fillText(String(gx), x, oy - Math.floor(rulerBand / 2));
+      const label = String(gx);
+      ctx.fillText(label, x, oy - midBand);       // top
+      ctx.fillText(label, x, bottomY + midBand);  // bottom
     }
-    ctx.textAlign = 'right';
     for (let gy = 0; gy <= converted.rows; gy += guideEvery) {
       const y = oy + gy * cell;
-      ctx.fillText(String(gy), ox - 6, y);
+      const label = String(gy);
+      ctx.textAlign = 'right';
+      ctx.fillText(label, ox - Math.round(6 * exportScale), y);         // left
+      ctx.textAlign = 'left';
+      ctx.fillText(label, rightX + Math.round(6 * exportScale), y);     // right
     }
     ctx.restore();
   }
