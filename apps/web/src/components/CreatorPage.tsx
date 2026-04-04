@@ -1,13 +1,79 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ApiClient, CreatorProfileDto, DesignDto, DraftSummaryDto, ExternalLink } from '../services/api';
 import { drawWatermark } from './PublishDesignModal';
 
 type Props = {
   apiClient: ApiClient;
+  embedded?: boolean;
+  section?: 'profile' | 'designs';
+  onProfileSaved?: () => void;
 };
 
-export default function CreatorPage({ apiClient }: Props) {
+export default function CreatorPage({ apiClient, embedded = false, section, onProfileSaved }: Props) {
   const [tab, setTab] = useState<'profile' | 'designs'>('profile');
+
+  const tabs = (
+    <div className="page-tabs">
+      <button
+        type="button"
+        className={`page-tab-btn${tab === 'profile' ? ' active' : ''}`}
+        onClick={() => setTab('profile')}
+      >
+        個人資料
+      </button>
+      <button
+        type="button"
+        className={`page-tab-btn${tab === 'designs' ? ' active' : ''}`}
+        onClick={() => setTab('designs')}
+      >
+        設計圖管理
+      </button>
+    </div>
+  );
+
+  const content = (
+    <>
+      {tab === 'profile' ? (
+        <ProfileEditor apiClient={apiClient} onSaved={onProfileSaved} />
+      ) : (
+        <DesignManager apiClient={apiClient} />
+      )}
+    </>
+  );
+
+  // embedded + section：由外層 UserProfilePage 控制導覽，不顯示內部 tab bar
+  if (embedded && section) {
+    return (
+      <div className="creator-embedded">
+        {section === 'designs' && (
+          <div className="creator-embedded-actions">
+            <div className="creator-tab-actions" id="creator-tab-actions-portal" />
+          </div>
+        )}
+        <div className="creator-embedded-content">
+          {section === 'profile' ? (
+            <ProfileEditor apiClient={apiClient} onSaved={onProfileSaved} />
+          ) : (
+            <DesignManager apiClient={apiClient} />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (embedded) {
+    return (
+      <div className="creator-embedded">
+        <div className="creator-embedded-tabs">
+          {tabs}
+          {tab === 'designs' && <div className="creator-tab-actions" id="creator-tab-actions-portal" />}
+        </div>
+        <div className="creator-embedded-content">
+          {content}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="page-shell creator-page">
@@ -22,22 +88,7 @@ export default function CreatorPage({ apiClient }: Props) {
 
       <div className="page-sticky-bar">
         <div className="page-sticky-bar-inner creator-sticky-inner">
-          <div className="page-tabs">
-            <button
-              type="button"
-              className={`page-tab-btn${tab === 'profile' ? ' active' : ''}`}
-              onClick={() => setTab('profile')}
-            >
-              個人資料
-            </button>
-            <button
-              type="button"
-              className={`page-tab-btn${tab === 'designs' ? ' active' : ''}`}
-              onClick={() => setTab('designs')}
-            >
-              設計圖管理
-            </button>
-          </div>
+          {tabs}
           {tab === 'designs' && (
             <div className="creator-tab-actions" id="creator-tab-actions-portal" />
           )}
@@ -46,11 +97,7 @@ export default function CreatorPage({ apiClient }: Props) {
 
       <div className="page-content">
         <div className="page-content-inner">
-          {tab === 'profile' ? (
-            <ProfileEditor apiClient={apiClient} />
-          ) : (
-            <DesignManager apiClient={apiClient} />
-          )}
+          {content}
         </div>
       </div>
     </div>
@@ -59,8 +106,37 @@ export default function CreatorPage({ apiClient }: Props) {
 
 // ─── 個人資料編輯 ────────────────────────────────────────────
 
-function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
+function compressImageToBase64(file: File, maxBytes = 100000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      let { width, height } = img;
+      const scale = Math.min(1, Math.sqrt(maxBytes / (width * height * 0.15)));
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext('2d')!.drawImage(img, 0, 0, width, height);
+      const data = canvas.toDataURL('image/jpeg', 0.82);
+      resolve(data);
+    };
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+function ProfileEditor({ apiClient, onSaved }: { apiClient: ApiClient; onSaved?: () => void }) {
   const [profile, setProfile] = useState<CreatorProfileDto | null>(null);
+  const [displayName, setDisplayName] = useState('');
+  const [avatarImage, setAvatarImage] = useState<string | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [location, setLocation] = useState('');
+  const [priceRange, setPriceRange] = useState('');
+  const [turnaround, setTurnaround] = useState('');
+  const [specialties, setSpecialties] = useState('');
   const [bio, setBio] = useState('');
   const [styleTags, setStyleTags] = useState('');
   const [acceptingOrders, setAcceptingOrders] = useState(true);
@@ -68,10 +144,17 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
   const [watermarkText, setWatermarkText] = useState('');
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState('');
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     apiClient.getCreatorProfile().then((p) => {
       setProfile(p);
+      setDisplayName(p.displayName ?? '');
+      setAvatarImage(p.avatarImage ?? null);
+      setLocation(p.location ?? '');
+      setPriceRange(p.priceRange ?? '');
+      setTurnaround(p.turnaround ?? '');
+      setSpecialties((p.specialties ?? []).join('、'));
       setBio(p.bio ?? '');
       setStyleTags((p.styleTags ?? []).join('、'));
       setAcceptingOrders(p.acceptingOrders);
@@ -79,6 +162,21 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
       setWatermarkText(p.watermarkText ?? '');
     });
   }, [apiClient]);
+
+  async function handleAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAvatarBusy(true);
+    try {
+      const data = await compressImageToBase64(file, 100000);
+      setAvatarImage(data);
+    } catch {
+      alert('圖片處理失敗');
+    } finally {
+      setAvatarBusy(false);
+      e.target.value = '';
+    }
+  }
 
   function addLink() {
     setLinks((prev) => [...prev, { label: '', url: '' }]);
@@ -98,8 +196,15 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
     setStatus('');
     try {
       const tags = styleTags.split(/[、\s]+/).map((t) => t.trim()).filter(Boolean);
+      const specs = specialties.split(/[、\s]+/).map((t) => t.trim()).filter(Boolean);
       const cleanLinks = links.filter((l) => l.label.trim() && l.url.trim());
       await apiClient.putCreatorProfile({
+        displayName: displayName.trim() || undefined,
+        avatarImage: avatarImage || undefined,
+        location: location.trim() || undefined,
+        priceRange: priceRange.trim() || undefined,
+        turnaround: turnaround.trim() || undefined,
+        specialties: specs.length ? specs : undefined,
         bio: bio || undefined,
         styleTags: tags,
         externalLinks: cleanLinks,
@@ -107,6 +212,7 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
         watermarkText: watermarkText || undefined,
       });
       setStatus('已儲存');
+      onSaved?.();
     } catch (err: any) {
       setStatus('儲存失敗：' + (err?.message ?? '未知錯誤'));
     } finally {
@@ -120,6 +226,127 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
     <div className="creator-profile-layout">
       <div className="panel creator-profile-form-col">
         <form onSubmit={handleSave}>
+
+        {/* ── 頭像 ── */}
+        <div className="avatar-upload-row">
+          <div
+            className="avatar-upload-preview"
+            onClick={() => avatarInputRef.current?.click()}
+            title="點擊更換大頭貼"
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === 'Enter' && avatarInputRef.current?.click()}
+            aria-label="上傳大頭貼"
+          >
+            {avatarImage ? (
+              <img src={avatarImage} alt="大頭貼預覽" className="avatar-upload-img" />
+            ) : (
+              <span className="avatar-upload-placeholder">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                </svg>
+              </span>
+            )}
+            {avatarBusy && <div className="avatar-upload-overlay">處理中...</div>}
+          </div>
+          <div className="avatar-upload-info">
+            <button
+              type="button"
+              className="ghost"
+              style={{ fontSize: 13 }}
+              onClick={() => avatarInputRef.current?.click()}
+              disabled={avatarBusy}
+            >
+              {avatarImage ? '更換大頭貼' : '上傳大頭貼'}
+            </button>
+            {avatarImage && (
+              <button
+                type="button"
+                className="ghost"
+                style={{ fontSize: 13, color: 'var(--danger-text)' }}
+                onClick={() => setAvatarImage(null)}
+              >
+                移除
+              </button>
+            )}
+            <span className="hint" style={{ fontSize: 12 }}>JPG / PNG，壓縮至 100KB</span>
+          </div>
+          <input
+            ref={avatarInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={handleAvatarChange}
+          />
+        </div>
+
+        <label>
+          顯示名稱
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="公開顯示的名稱（留空則顯示帳號名）"
+            maxLength={30}
+          />
+        </label>
+
+        <div className="row two">
+          <label>
+            地區
+            <input
+              type="text"
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="如：台北、高雄"
+              maxLength={30}
+            />
+          </label>
+          <label>
+            接單狀態
+            <label className="switch-row" style={{ marginTop: 8 }}>
+              目前接單中
+              <input
+                type="checkbox"
+                checked={acceptingOrders}
+                onChange={(e) => setAcceptingOrders(e.target.checked)}
+              />
+            </label>
+          </label>
+        </div>
+
+        <label>
+          接單價格說明
+          <input
+            type="text"
+            value={priceRange}
+            onChange={(e) => setPriceRange(e.target.value)}
+            placeholder="如：NT$200–800 / 件"
+            maxLength={60}
+          />
+        </label>
+
+        <label>
+          交件時間說明
+          <input
+            type="text"
+            value={turnaround}
+            onChange={(e) => setTurnaround(e.target.value)}
+            placeholder="如：通常 2–4 週"
+            maxLength={60}
+          />
+        </label>
+
+        <label>
+          專長技術
+          <input
+            type="text"
+            value={specialties}
+            onChange={(e) => setSpecialties(e.target.value)}
+            placeholder="如：漸層技法、大圖（頓號分隔）"
+          />
+        </label>
+
         <label>
           自我介紹
           <textarea
@@ -139,15 +366,6 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
             value={styleTags}
             onChange={(e) => setStyleTags(e.target.value)}
             placeholder="遊戲、動漫、可愛風（頓號分隔）"
-          />
-        </label>
-
-        <label className="switch-row" style={{ margin: '12px 0' }}>
-          目前接單中
-          <input
-            type="checkbox"
-            checked={acceptingOrders}
-            onChange={(e) => setAcceptingOrders(e.target.checked)}
           />
         </label>
 
@@ -223,22 +441,46 @@ function ProfileEditor({ apiClient }: { apiClient: ApiClient }) {
 
       <div className="creator-profile-aside">
         <div className="panel">
-          <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 600, color: 'var(--ink-2)' }}>公開頁面預覽</p>
-          {bio && <p style={{ margin: '0 0 6px', fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>{bio}</p>}
-          {styleTags && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-              {styleTags.split(/[、\s]+/).filter(Boolean).map((t) => (
-                <span key={t} className="tag">{t}</span>
-              ))}
+          <p style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 600, color: 'var(--ink-2)' }}>公開頁面預覽</p>
+          {/* 頭像 + 名稱 */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+            {avatarImage ? (
+              <img src={avatarImage} alt="" style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--primary)' }} />
+            ) : (
+              <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 20, fontWeight: 700, flexShrink: 0 }}>
+                ?
+              </div>
+            )}
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{displayName || '（顯示名稱）'}</div>
+              {location && <div style={{ fontSize: 12, color: 'var(--muted)' }}>{location}</div>}
             </div>
-          )}
-          {!bio && !styleTags && (
+          </div>
+          {/* 接單狀態 */}
+          <div style={{ marginBottom: 8 }}>
+            <span className={acceptingOrders ? 'badge-accepting' : 'badge-paused'} style={{ fontSize: 12 }}>
+              {acceptingOrders ? '接單中' : '暫停接單'}
+            </span>
+            {priceRange && <span style={{ marginLeft: 8, fontSize: 12, color: 'var(--muted)' }}>{priceRange}</span>}
+          </div>
+          {turnaround && <p style={{ margin: '0 0 6px', fontSize: 12, color: 'var(--muted)' }}>⏱ {turnaround}</p>}
+          {bio && <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>{bio}</p>}
+          {/* 標籤群 */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {specialties.split(/[、\s]+/).filter(Boolean).map((t) => (
+              <span key={t} className="tag" style={{ background: '#e8f4fd', color: '#2980b9' }}>{t}</span>
+            ))}
+            {styleTags.split(/[、\s]+/).filter(Boolean).map((t) => (
+              <span key={t} className="tag">{t}</span>
+            ))}
+          </div>
+          {!bio && !styleTags && !specialties && (
             <p style={{ margin: 0, fontSize: 13, color: 'var(--faint)' }}>尚無內容</p>
           )}
         </div>
         <div className="panel">
           <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)', lineHeight: 1.6 }}>
-            完整填寫自我介紹與風格標籤，可提升在市集的曝光度。
+            完整填寫個人資料與標籤，可提升在市集的曝光度。
             外部聯絡連結僅登入會員可見。
           </p>
         </div>
@@ -253,6 +495,7 @@ function DesignManager({ apiClient }: { apiClient: ApiClient }) {
   const [designs, setDesigns] = useState<DesignDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [editingDesign, setEditingDesign] = useState<DesignDto | null>(null);
 
   function reload() {
     setLoading(true);
@@ -284,22 +527,28 @@ function DesignManager({ apiClient }: { apiClient: ApiClient }) {
     }
   }
 
+  function closeForm() {
+    setShowForm(false);
+    setEditingDesign(null);
+  }
+
   if (loading) return <p className="hint" style={{ padding: 24 }}>載入中...</p>;
 
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
-        <button className="primary" style={{ width: 'auto' }} onClick={() => setShowForm(true)}>
+        <button className="primary" style={{ width: 'auto' }} onClick={() => { setEditingDesign(null); setShowForm(true); }}>
           ＋ 新增設計圖
         </button>
         <span className="hint">共 {designs.length} 個</span>
       </div>
 
-      {showForm && (
+      {(showForm || editingDesign) && (
         <DesignForm
           apiClient={apiClient}
-          onSaved={() => { setShowForm(false); reload(); }}
-          onCancel={() => setShowForm(false)}
+          editingDesign={editingDesign}
+          onSaved={() => { closeForm(); reload(); }}
+          onCancel={closeForm}
         />
       )}
 
@@ -308,42 +557,51 @@ function DesignManager({ apiClient }: { apiClient: ApiClient }) {
       ) : (
         <div className="design-mgmt-grid">
           {designs.map((d) => (
-            <div key={d.id} className="design-item panel">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
-                  <strong>{d.title}</strong>
-                  <span
-                    className={d.status === 'published' ? 'badge-accepting' : 'badge-paused'}
-                    style={{ marginLeft: 8, fontSize: 12 }}
-                  >
-                    {d.status === 'published' ? '已公開' : '草稿'}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button
-                    className="ghost"
-                    style={{ fontSize: 12, padding: '4px 8px' }}
-                    onClick={() => handleToggleStatus(d)}
-                  >
-                    {d.status === 'published' ? '改為草稿' : '公開上架'}
-                  </button>
-                  <button
-                    className="ghost"
-                    style={{ fontSize: 12, padding: '4px 8px', color: 'var(--danger-text)' }}
-                    onClick={() => handleDelete(d.id)}
-                  >
-                    刪除
-                  </button>
-                </div>
-              </div>
-              {d.description && <p className="hint" style={{ marginTop: 4, fontSize: 13 }}>{d.description}</p>}
-              <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 13, color: 'var(--muted)' }}>
-                <span>{d.licenseType === 'commercial' ? '商業授權' : '個人使用'}</span>
-                {d.price != null ? <span>NT$ {d.price.toLocaleString()}</span> : <span>價格面議</span>}
-                <span>⏱ {d.estimatedTime || '由創作者告知'}</span>
-                {d.tags.length > 0 && (
-                  <span>{d.tags.map((t) => `#${t}`).join(' ')}</span>
+            <div key={d.id} className="design-item panel design-mgmt-card">
+              {/* 左：正方形縮圖 */}
+              <div className="design-mgmt-thumb-wrap">
+                {d.previewImage ? (
+                  <img src={d.previewImage} alt={d.title} className="design-mgmt-thumb" />
+                ) : (
+                  <div className="design-mgmt-thumb-placeholder">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+                    </svg>
+                  </div>
                 )}
+              </div>
+
+              {/* 右：資訊 + 操作 */}
+              <div className="design-mgmt-info">
+                <div className="design-mgmt-info-top">
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <strong style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 14 }}>{d.title}</strong>
+                    <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span className={d.status === 'published' ? 'badge-accepting' : 'badge-paused'} style={{ fontSize: 11 }}>
+                        {d.status === 'published' ? '已公開' : '草稿'}
+                      </span>
+                      <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                        {d.licenseType === 'commercial' ? '商業授權' : '個人使用'}
+                      </span>
+                      {d.price != null
+                        ? <span style={{ fontSize: 12, color: 'var(--primary)', fontWeight: 600 }}>NT$ {d.price.toLocaleString()}</span>
+                        : <span style={{ fontSize: 12, color: 'var(--muted)' }}>面議</span>
+                      }
+                    </div>
+                  </div>
+                </div>
+                {d.description && (
+                  <p style={{ margin: '6px 0 0', fontSize: 12, color: 'var(--muted)', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
+                    {d.description}
+                  </p>
+                )}
+                <div className="design-mgmt-actions">
+                  <button className="ghost" style={{ fontSize: 12, padding: '3px 10px' }} onClick={() => { setEditingDesign(d); setShowForm(false); }}>編輯</button>
+                  <button className="ghost" style={{ fontSize: 12, padding: '3px 10px' }} onClick={() => handleToggleStatus(d)}>
+                    {d.status === 'published' ? '下架' : '上架'}
+                  </button>
+                  <button className="ghost" style={{ fontSize: 12, padding: '3px 10px', color: 'var(--danger-text)' }} onClick={() => handleDelete(d.id)}>刪除</button>
+                </div>
               </div>
             </div>
           ))}
@@ -355,26 +613,29 @@ function DesignManager({ apiClient }: { apiClient: ApiClient }) {
 
 function DesignForm({
   apiClient,
+  editingDesign,
   onSaved,
   onCancel,
 }: {
   apiClient: ApiClient;
+  editingDesign?: DesignDto | null;
   onSaved: () => void;
   onCancel: () => void;
 }) {
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [tags, setTags] = useState('');
-  const [licenseType, setLicenseType] = useState<'personal' | 'commercial'>('personal');
-  const [price, setPrice] = useState('');
-  const [estimatedTime, setEstimatedTime] = useState('');
-  const [status, setStatus] = useState<'draft' | 'published'>('draft');
+  const isEdit = !!editingDesign;
+  const [title, setTitle] = useState(editingDesign?.title ?? '');
+  const [description, setDescription] = useState(editingDesign?.description ?? '');
+  const [tags, setTags] = useState((editingDesign?.tags ?? []).join('、'));
+  const [licenseType, setLicenseType] = useState<'personal' | 'commercial'>(editingDesign?.licenseType ?? 'personal');
+  const [price, setPrice] = useState(editingDesign?.price != null ? String(editingDesign.price) : '');
+  const [estimatedTime, setEstimatedTime] = useState(editingDesign?.estimatedTime ?? '');
+  const [status, setStatus] = useState<'draft' | 'published'>(editingDesign?.status ?? 'draft');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   // 預覽圖（從草稿渲染）
   const [cleanDataUrl, setCleanDataUrl] = useState('');
-  const [previewUrl, setPreviewUrl] = useState('');
+  const [previewUrl, setPreviewUrl] = useState(editingDesign?.previewImage ?? '');
   const [watermarkText, setWatermarkText] = useState('');
 
   // 草稿選取器
@@ -465,12 +726,9 @@ function DesignForm({
     setSaving(true);
     setError('');
     try {
-      const parsedTags = tags
-        .split(/[、\s]+/)
-        .map((t) => t.trim())
-        .filter(Boolean);
+      const parsedTags = tags.split(/[、\s]+/).map((t) => t.trim()).filter(Boolean);
       const parsedPrice = price.trim() ? parseInt(price.trim(), 10) : undefined;
-      await apiClient.createDesign({
+      const payload = {
         title: title.trim(),
         description: description.trim() || undefined,
         tags: parsedTags,
@@ -479,10 +737,15 @@ function DesignForm({
         estimatedTime: estimatedTime.trim() || undefined,
         previewImage: previewUrl || undefined,
         status,
-      });
+      };
+      if (isEdit) {
+        await apiClient.updateDesign(editingDesign!.id, payload);
+      } else {
+        await apiClient.createDesign(payload);
+      }
       onSaved();
     } catch (err: any) {
-      setError('建立失敗：' + (err?.message ?? '未知錯誤'));
+      setError((isEdit ? '儲存失敗：' : '建立失敗：') + (err?.message ?? '未知錯誤'));
       setSaving(false);
     }
   }
@@ -491,7 +754,7 @@ function DesignForm({
     <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
       <div className="modal-box">
         <div className="modal-header">
-          <h3>新增設計圖</h3>
+          <h3>{isEdit ? '編輯設計圖' : '新增設計圖'}</h3>
           <button type="button" className="ghost topbar-icon" onClick={onCancel} aria-label="關閉">✕</button>
         </div>
         <div className="publish-layout">
@@ -593,7 +856,7 @@ function DesignForm({
             {error && <p className="status error">{error}</p>}
             <div className="row two" style={{ marginTop: 4 }}>
               <button type="submit" className="primary" disabled={saving}>
-                {saving ? '建立中...' : '建立'}
+                {saving ? (isEdit ? '儲存中...' : '建立中...') : (isEdit ? '儲存變更' : '建立')}
               </button>
               <button type="button" className="ghost" onClick={onCancel}>取消</button>
             </div>

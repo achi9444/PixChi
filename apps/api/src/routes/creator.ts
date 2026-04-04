@@ -20,7 +20,13 @@ creatorRouter.get('/profile', ...proOnly, async (req, res) => {
   }
 
   res.json({
-    bio: profile.bio,
+    displayName: profile.displayName ?? '',
+    avatarImage: profile.avatarImage ?? null,
+    location: profile.location ?? '',
+    priceRange: profile.priceRange ?? '',
+    turnaround: profile.turnaround ?? '',
+    specialties: profile.specialties ? JSON.parse(profile.specialties) : [],
+    bio: profile.bio ?? '',
     styleTags: profile.styleTags ? JSON.parse(profile.styleTags) : [],
     externalLinks: profile.externalLinks ? JSON.parse(profile.externalLinks) : [],
     acceptingOrders: profile.acceptingOrders,
@@ -32,6 +38,12 @@ creatorRouter.get('/profile', ...proOnly, async (req, res) => {
 creatorRouter.put('/profile', ...proOnly, async (req, res) => {
   const input = z
     .object({
+      displayName: z.string().max(30).optional(),
+      avatarImage: z.string().max(150000).nullable().optional(),
+      location: z.string().max(30).optional(),
+      priceRange: z.string().max(60).optional(),
+      turnaround: z.string().max(60).optional(),
+      specialties: z.array(z.string().max(20)).max(10).optional(),
       bio: z.string().max(500).optional(),
       styleTags: z.array(z.string().max(20)).max(10).optional(),
       externalLinks: z
@@ -55,6 +67,12 @@ creatorRouter.put('/profile', ...proOnly, async (req, res) => {
 
   const userId = req.authUser!.id;
   const data: any = {};
+  if (input.data.displayName !== undefined) data.displayName = input.data.displayName.trim() || null;
+  if (input.data.avatarImage !== undefined) data.avatarImage = input.data.avatarImage;
+  if (input.data.location !== undefined) data.location = input.data.location.trim() || null;
+  if (input.data.priceRange !== undefined) data.priceRange = input.data.priceRange.trim() || null;
+  if (input.data.turnaround !== undefined) data.turnaround = input.data.turnaround.trim() || null;
+  if (input.data.specialties !== undefined) data.specialties = JSON.stringify(input.data.specialties);
   if (input.data.bio !== undefined) data.bio = input.data.bio || null;
   if (input.data.styleTags !== undefined) data.styleTags = JSON.stringify(input.data.styleTags);
   if (input.data.externalLinks !== undefined) data.externalLinks = JSON.stringify(input.data.externalLinks);

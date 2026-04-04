@@ -424,10 +424,11 @@ hr {
 /* ── Page Shell（色庫 / 市集 / 創作者後台 共用）── */
 .page-shell {
   height: calc(100dvh - 56px);
-  overflow-y: auto;
+  overflow-y: scroll;
   overflow-x: hidden;
   background: var(--bg);
 }
+
 
 .page-header {
   background: var(--surface);
@@ -2035,7 +2036,7 @@ tbody tr:hover td {
   flex-direction: column;
   gap: var(--sp-4);
   position: sticky;
-  top: calc(44px + var(--sp-4));
+  top: var(--sp-6);
 }
 
 /* Creator 設計圖管理 grid */
@@ -2043,6 +2044,67 @@ tbody tr:hover td {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--sp-4);
+}
+
+.design-mgmt-card {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 12px !important;
+}
+
+.design-mgmt-thumb-wrap {
+  width: 88px;
+  height: 88px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  position: relative;
+}
+
+.design-mgmt-thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.design-mgmt-thumb-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint);
+}
+
+.design-mgmt-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.design-mgmt-info-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.design-mgmt-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.design-mgmt-actions button {
+  width: auto;
 }
 
 /* Palette 兩欄 */
@@ -2076,12 +2138,17 @@ tbody tr:hover td {
   transform: translateY(-2px);
 }
 
-.design-card-header,
-.creator-card-header {
+.design-card-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
   gap: 8px;
+}
+
+.creator-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
 }
 
 .design-title,
@@ -2436,6 +2503,56 @@ tbody tr:hover td {
   }
   .palette-controls-col {
     position: static;
+  }
+
+  /* Profile sidebar → 水平 tab bar */
+  .profile-body {
+    flex-direction: column;
+  }
+  .profile-sidebar {
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: 0 var(--sp-3);
+    gap: 0;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .profile-sidebar::-webkit-scrollbar {
+    display: none;
+  }
+  .profile-nav-btn {
+    flex-shrink: 0;
+    border-radius: 0;
+    border-bottom: 2px solid transparent;
+    padding: 0 var(--sp-4);
+    height: 44px;
+    margin-bottom: -1px;
+    background: transparent;
+    color: var(--muted);
+  }
+  .profile-nav-btn:hover:not(:disabled) {
+    background: transparent;
+    color: var(--ink);
+    border-bottom-color: var(--line-strong);
+  }
+  .profile-nav-btn.active {
+    background: transparent;
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+  }
+  /* 帳號 tab 兩欄 → 單欄 */
+  .profile-account-layout {
+    grid-template-columns: 1fr;
+  }
+  .profile-main {
+    padding: var(--sp-4) var(--sp-3);
+  }
+  .profile-compact-header {
+    padding: 0 var(--sp-3);
   }
 }
 
@@ -3419,6 +3536,8 @@ tbody tr:hover td {
   width: auto;
 }
 
+/* preview wrapper is now a div, no override needed */
+
 .market-detail-modal-box {
   max-width: 760px;
 }
@@ -3430,11 +3549,9 @@ tbody tr:hover td {
 }
 
 .market-detail-preview-col {
-  padding: 20px;
+  padding: 16px;
   border-right: 1px solid var(--line);
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  display: block;
 }
 
 .market-detail-no-preview {
@@ -3444,7 +3561,10 @@ tbody tr:hover td {
 }
 
 .market-detail-preview {
+  display: block;
   width: 100%;
+  min-height: 180px;
+  max-height: 340px;
   border-radius: 8px;
   object-fit: contain;
   image-rendering: pixelated;
@@ -3617,4 +3737,670 @@ tbody tr:hover td {
   font-size: 11px;
   color: var(--primary);
   font-weight: 600;
+}
+
+/* ── 39. Badge variants ─────────────────────────────────── */
+.badge-license {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--muted);
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.badge-license.commercial {
+  background: #fdf3dc;
+  color: #b45309;
+}
+
+.badge-role {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── 40. Creator Card Avatar ────────────────────────────── */
+.creator-card-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--line);
+  flex-shrink: 0;
+}
+
+.creator-card-avatar-fallback {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.design-card-no-preview {
+  aspect-ratio: 1 / 1;
+  max-height: 140px;
+  background: var(--surface-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint);
+  border-radius: 8px;
+}
+
+/* ── 41. Market Detail Modal 3-col ─────────────────────── */
+.market-detail-modal-box {
+  max-width: 900px;
+}
+
+.market-detail-three-col {
+  display: grid;
+  grid-template-columns: 240px 1fr 200px;
+  gap: 0;
+}
+
+.market-detail-preview-btn {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: zoom-in;
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.market-detail-preview-zoom-hint {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 6px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.market-detail-preview-btn:hover .market-detail-preview-zoom-hint {
+  opacity: 1;
+}
+
+.market-detail-creator-mini {
+  padding: 20px 16px;
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  background: var(--surface-2);
+}
+
+.market-detail-creator-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--line);
+}
+
+.market-detail-creator-avatar-fallback {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+@media (max-width: 720px) {
+  .market-detail-three-col {
+    grid-template-columns: 1fr;
+  }
+  .market-detail-creator-mini {
+    border-left: none;
+    border-top: 1px solid var(--line);
+  }
+}
+
+/* ── 42. Lightbox ───────────────────────────────────────── */
+.lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1050;
+  background: rgba(0,0,0,0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.lightbox-fullimg {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 8px;
+  image-rendering: pixelated;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+.lightbox-card {
+  background: var(--surface);
+  border-radius: 12px;
+  overflow: hidden;
+  max-width: 560px;
+  width: 100%;
+  position: relative;
+  box-shadow: var(--shadow-lg);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.lightbox-img {
+  width: 100%;
+  max-height: 380px;
+  object-fit: contain;
+  background: var(--surface-3);
+  image-rendering: pixelated;
+}
+
+.lightbox-info {
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.5);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  z-index: 2;
+  padding: 0;
+  line-height: 1;
+}
+
+.lightbox-close:hover { background: rgba(0,0,0,0.7); }
+
+/* ── 43. Avatar Upload ──────────────────────────────────── */
+.avatar-upload-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.avatar-upload-preview {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 2px dashed var(--line-strong);
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  flex-shrink: 0;
+  background: var(--surface-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s;
+}
+
+.avatar-upload-preview:hover { border-color: var(--primary); }
+
+.avatar-upload-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-upload-placeholder {
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatar-upload-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  color: #fff;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatar-upload-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+/* ── 44. Creator Embedded ───────────────────────────────── */
+.creator-embedded {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.creator-embedded-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 20px;
+}
+
+.creator-embedded-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 0 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 20px;
+  min-height: 44px;
+}
+
+.creator-embedded-content {
+  /* inherits page layout */
+}
+
+.creator-profile-form-col {
+  /* inherits .panel */
+}
+
+/* ── 45. UserProfilePage ────────────────────────────────── */
+
+/* page-shell 覆寫：profile-page 自身不捲動 */
+.profile-page {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 緊湊頁首 */
+.profile-compact-header {
+  height: 72px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-6);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.profile-compact-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.profile-compact-header-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.profile-compact-username {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+/* 主體 */
+.profile-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+/* 左側 sidebar */
+.profile-sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--sp-4) var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.profile-nav-btn {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  padding: 9px var(--sp-3);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-2);
+  cursor: pointer;
+  height: auto;
+  box-shadow: none;
+  gap: var(--sp-2);
+  transition: background var(--duration-fast) var(--ease-out),
+              color var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-nav-btn:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+  box-shadow: none;
+}
+
+.profile-nav-btn.active {
+  background: var(--primary-bg);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.profile-nav-btn.active::before {
+  content: '';
+  display: block;
+  width: 3px;
+  height: 14px;
+  background: var(--primary);
+  border-radius: 2px;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+/* 主內容區 */
+.profile-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--sp-6);
+  background: var(--bg);
+}
+
+/* 帳號 tab 兩欄 */
+.profile-account-layout {
+  display: grid;
+  grid-template-columns: 340px 380px;
+  gap: var(--sp-5);
+  align-items: start;
+}
+
+.profile-account-drafts,
+.profile-account-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+/* 密碼表單限制寬度，不讓 input 撐到整欄 */
+.profile-account-settings .profile-section form {
+  max-width: 380px;
+}
+
+/* 創作者資料欄位放寬上限 */
+.profile-main .creator-profile-layout {
+  grid-template-columns: minmax(0, 640px) minmax(0, 380px);
+}
+
+/* 頭像（base + sm modifier） */
+.profile-avatar {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  font-weight: 700;
+  flex-shrink: 0;
+  overflow: hidden;
+  border: 3px solid var(--surface);
+  box-shadow: 0 0 0 2px var(--primary);
+}
+
+.profile-avatar--sm {
+  width: 40px;
+  height: 40px;
+  font-size: 16px;
+  border-width: 2px;
+}
+
+/* Section 卡片 */
+.profile-section {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px 24px;
+}
+
+.profile-section-title {
+  margin: 0 0 14px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.profile-draft-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.profile-creator-card {
+  border-color: var(--primary);
+  background: var(--primary-bg);
+}
+
+/* ── 46. CreatorPublicPage ──────────────────────────────── */
+.creator-public-banner {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  padding: 32px 0 24px;
+}
+
+.creator-public-header {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 var(--sp-6);
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.creator-public-avatar {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 3px solid var(--primary);
+  flex-shrink: 0;
+}
+
+.creator-public-avatar-fallback {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.creator-public-section {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.creator-public-section:last-child { border-bottom: none; }
+
+.creator-public-section-title {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.creator-public-designs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.creator-public-design-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  padding: 0;
+}
+
+.creator-public-design-card:hover {
+  border-color: var(--primary);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+
+.creator-public-design-img-wrap {
+  position: relative;
+  width: 100%;
+  height: 0;
+  padding-bottom: 100%;
+  overflow: hidden;
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.creator-public-design-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.creator-public-design-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint);
+}
+
+.creator-public-design-info {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.creator-public-design-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.creator-link-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.creator-link-btn:hover {
+  background: var(--primary-2);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 600px) {
+  .creator-public-header { flex-direction: column; align-items: flex-start; }
+  .creator-public-designs-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+  .profile-header { gap: 12px; }
+  .profile-avatar { width: 56px; height: 56px; font-size: 22px; }
+  .market-detail-three-col { grid-template-columns: 1fr; }
 }

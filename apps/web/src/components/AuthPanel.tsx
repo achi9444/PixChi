@@ -29,6 +29,7 @@ type Props = {
   onPasswordChange: (v: string) => void;
   onClosePanel: () => void;
   onAvatarClick?: () => void;
+  avatarImage?: string | null;
 };
 
 export default function AuthPanel({
@@ -46,6 +47,7 @@ export default function AuthPanel({
   onPasswordChange,
   onClosePanel,
   onAvatarClick,
+  avatarImage,
 }: Props) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [regUsername, setRegUsername] = useState('');
@@ -86,10 +88,12 @@ export default function AuthPanel({
         <button
           className="user-avatar"
           onClick={onAvatarClick}
-          title={`${authUser.username}（${roleLabel}）— 點擊進入後台`}
-          aria-label={`用戶 ${authUser.username}，點擊進入創作者後台`}
+          title={`${authUser.username}（${roleLabel}）— 我的帳號`}
+          aria-label={`用戶 ${authUser.username}，點擊進入帳號頁面`}
         >
-          {avatarLetter}
+          {avatarImage
+            ? <img src={avatarImage} alt={authUser.username} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+            : avatarLetter}
         </button>
         <button className="ghost logout-separator" onClick={onLogout}>
           登出

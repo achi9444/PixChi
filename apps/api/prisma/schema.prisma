@@ -124,6 +124,12 @@ model UserSetting {
 model CreatorProfile {
   id              String   @id @default(cuid())
   userId          String   @unique
+  displayName     String?
+  avatarImage     String?
+  location        String?
+  priceRange      String?
+  turnaround      String?
+  specialties     String?
   bio             String?
   externalLinks   String?
   acceptingOrders Boolean  @default(true)

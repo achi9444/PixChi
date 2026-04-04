@@ -1,20 +1,23 @@
 import { useEffect, useState } from 'react';
 import type { ApiClient, DesignDto, MarketCreatorDto } from '../services/api';
 import type { AuthUser } from '../services/api';
+import type { AppPage } from './TopBar';
 
 type Tab = 'designs' | 'creators';
 
 type Props = {
   apiClient: ApiClient | null;
   authUser: AuthUser | null;
+  onNavigate?: (page: AppPage, username?: string) => void;
 };
 
-export default function MarketPage({ apiClient, authUser }: Props) {
+export default function MarketPage({ apiClient, authUser, onNavigate }: Props) {
   const [tab, setTab] = useState<Tab>('designs');
   const [searchQ, setSearchQ] = useState('');
   const [inputQ, setInputQ] = useState('');
   const [onlyAccepting, setOnlyAccepting] = useState(false);
   const [licenseFilter, setLicenseFilter] = useState<'all' | 'personal' | 'commercial'>('all');
+  const [sortFilter, setSortFilter] = useState<'newest' | 'price_asc' | 'price_desc'>('newest');
 
   const [designs, setDesigns] = useState<DesignDto[]>([]);
   const [designsTotal, setDesignsTotal] = useState(0);
@@ -29,11 +32,9 @@ export default function MarketPage({ apiClient, authUser }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Modal state
+  // Design detail modal
   const [selectedDesign, setSelectedDesign] = useState<DesignDto | null>(null);
-  const [creatorModalOpen, setCreatorModalOpen] = useState(false);
-  const [selectedCreator, setSelectedCreator] = useState<MarketCreatorDto | null>(null);
-  const [creatorLoading, setCreatorLoading] = useState(false);
+  const [selectedDesignIdx, setSelectedDesignIdx] = useState<number>(-1);
 
   useEffect(() => {
     if (!apiClient) return;
@@ -45,6 +46,7 @@ export default function MarketPage({ apiClient, authUser }: Props) {
           page: designsPage,
           q: searchQ || undefined,
           license: licenseFilter === 'all' ? undefined : licenseFilter,
+          sort: sortFilter !== 'newest' ? sortFilter : undefined,
         })
         .then((r) => {
           setDesigns(r.designs);
@@ -70,7 +72,7 @@ export default function MarketPage({ apiClient, authUser }: Props) {
         .catch(() => setError('載入失敗，請稍後再試'))
         .finally(() => setLoading(false));
     }
-  }, [apiClient, tab, searchQ, designsPage, creatorsPage, licenseFilter, onlyAccepting]);
+  }, [apiClient, tab, searchQ, designsPage, creatorsPage, licenseFilter, sortFilter, onlyAccepting]);
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -85,26 +87,18 @@ export default function MarketPage({ apiClient, authUser }: Props) {
     setCreatorsPage(1);
   }
 
-  async function openCreatorProfile(username: string) {
-    setSelectedDesign(null);
-    setCreatorModalOpen(true);
-    setCreatorLoading(true);
-    setSelectedCreator(null);
-    try {
-      if (!apiClient) return;
-      const data = await apiClient.getMarketCreatorProfile(username);
-      setSelectedCreator(data);
-    } catch {
-      setCreatorModalOpen(false);
-    } finally {
-      setCreatorLoading(false);
-    }
+  function openDesign(design: DesignDto) {
+    const idx = designs.findIndex((d) => d.id === design.id);
+    setSelectedDesign(design);
+    setSelectedDesignIdx(idx);
   }
 
-  function closeCreatorModal() {
-    setCreatorModalOpen(false);
-    setSelectedCreator(null);
-    setCreatorLoading(false);
+  function navigateDesign(dir: -1 | 1) {
+    const next = selectedDesignIdx + dir;
+    if (next >= 0 && next < designs.length) {
+      setSelectedDesign(designs[next]);
+      setSelectedDesignIdx(next);
+    }
   }
 
   return (
@@ -161,10 +155,23 @@ export default function MarketPage({ apiClient, authUser }: Props) {
                     setLicenseFilter(e.target.value as 'all' | 'personal' | 'commercial');
                     setDesignsPage(1);
                   }}
+                  aria-label="授權類型"
                 >
                   <option value="all">全部授權</option>
                   <option value="personal">個人使用</option>
                   <option value="commercial">商業授權</option>
+                </select>
+                <select
+                  value={sortFilter}
+                  onChange={(e) => {
+                    setSortFilter(e.target.value as 'newest' | 'price_asc' | 'price_desc');
+                    setDesignsPage(1);
+                  }}
+                  aria-label="排序方式"
+                >
+                  <option value="newest">最新上架</option>
+                  <option value="price_asc">價格低到高</option>
+                  <option value="price_desc">價格高到低</option>
                 </select>
               </div>
             )}
@@ -203,11 +210,7 @@ export default function MarketPage({ apiClient, authUser }: Props) {
               ) : (
                 <div className="market-grid">
                   {designs.map((d) => (
-                    <DesignCard
-                      key={d.id}
-                      design={d}
-                      onSelect={setSelectedDesign}
-                    />
+                    <DesignCard key={d.id} design={d} onSelect={openDesign} />
                   ))}
                 </div>
               )}
@@ -227,7 +230,7 @@ export default function MarketPage({ apiClient, authUser }: Props) {
                     <CreatorCard
                       key={c.username}
                       creator={c}
-                      onSelect={(c) => openCreatorProfile(c.username)}
+                      onSelect={() => onNavigate?.('creator-public', c.username)}
                     />
                   ))}
                 </div>
@@ -241,37 +244,22 @@ export default function MarketPage({ apiClient, authUser }: Props) {
       {selectedDesign && (
         <DesignDetailModal
           design={selectedDesign}
+          designs={designs}
+          selectedIdx={selectedDesignIdx}
           authUser={authUser}
           onClose={() => setSelectedDesign(null)}
-          onViewCreator={openCreatorProfile}
-        />
-      )}
-
-      {creatorModalOpen && (
-        <CreatorProfileModal
-          creator={selectedCreator}
-          loading={creatorLoading}
-          authUser={authUser}
-          onClose={closeCreatorModal}
-          onViewDesign={(design) => {
-            setCreatorModalOpen(false);
-            setSelectedCreator(null);
-            setSelectedDesign(design);
-          }}
+          onNavigate={navigateDesign}
+          onViewCreator={(username) => onNavigate?.('creator-public', username)}
         />
       )}
     </div>
   );
 }
 
-function DesignCard({
-  design,
-  onSelect,
-}: {
-  design: DesignDto;
-  onSelect: (d: DesignDto) => void;
-}) {
-  const licenseLabel = design.licenseType === 'commercial' ? '商業授權' : '個人使用';
+// ─── Design Card ─────────────────────────────────────────────
+
+function DesignCard({ design, onSelect }: { design: DesignDto; onSelect: (d: DesignDto) => void }) {
+  const displayName = design.creator?.displayName || design.creator?.username;
   return (
     <div
       className="design-card panel"
@@ -281,19 +269,25 @@ function DesignCard({
       tabIndex={0}
       onKeyDown={(e) => e.key === 'Enter' && onSelect(design)}
     >
-      {design.previewImage && (
+      {design.previewImage ? (
         <img src={design.previewImage} alt={design.title} className="design-card-preview" />
+      ) : (
+        <div className="design-card-preview design-card-no-preview" aria-hidden="true">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+          </svg>
+        </div>
       )}
       <div className="design-card-header">
         <h3 className="design-title">{design.title}</h3>
-        <span className="design-license-badge">{licenseLabel}</span>
+        <span className={`badge-license${design.licenseType === 'commercial' ? ' commercial' : ''}`}>
+          {design.licenseType === 'commercial' ? '商業' : '個人'}
+        </span>
       </div>
       {design.description && <p className="design-desc hint">{design.description}</p>}
       {design.tags.length > 0 && (
         <div className="design-tags">
-          {design.tags.map((t) => (
-            <span key={t} className="tag">{t}</span>
-          ))}
+          {design.tags.map((t) => <span key={t} className="tag">{t}</span>)}
         </div>
       )}
       <div className="design-card-footer">
@@ -302,70 +296,105 @@ function DesignCard({
         ) : (
           <span className="hint">價格面議</span>
         )}
+        {displayName && <span className="design-creator hint">by {displayName}</span>}
         {design.creator && (
-          <span className="design-creator hint">by {design.creator.username}</span>
-        )}
-        {design.creator && (
-          design.creator.acceptingOrders ? (
-            <span className="badge-accepting">接單中</span>
-          ) : (
-            <span className="badge-paused">暫停接單</span>
-          )
+          design.creator.acceptingOrders
+            ? <span className="badge-accepting">接單中</span>
+            : <span className="badge-paused">暫停接單</span>
         )}
       </div>
     </div>
   );
 }
 
-function CreatorCard({
-  creator,
-  onSelect,
-}: {
-  creator: MarketCreatorDto;
-  onSelect: (c: MarketCreatorDto) => void;
-}) {
+// ─── Creator Card ─────────────────────────────────────────────
+
+function CreatorCard({ creator, onSelect }: { creator: MarketCreatorDto; onSelect: () => void }) {
+  const displayName = creator.displayName || creator.username;
+  const avatarLetter = displayName.charAt(0).toUpperCase();
+
   return (
     <div
       className="creator-card panel"
       style={{ cursor: 'pointer' }}
-      onClick={() => onSelect(creator)}
+      onClick={onSelect}
       role="button"
       tabIndex={0}
-      onKeyDown={(e) => e.key === 'Enter' && onSelect(creator)}
+      onKeyDown={(e) => e.key === 'Enter' && onSelect()}
     >
       <div className="creator-card-header">
-        <h3 className="creator-name">{creator.username}</h3>
-        <span className={creator.acceptingOrders ? 'badge-accepting' : 'badge-paused'}>
-          {creator.acceptingOrders ? '接單中' : '暫停接單'}
-        </span>
+        {/* 頭像 */}
+        {creator.avatarImage ? (
+          <img src={creator.avatarImage} alt={displayName} className="creator-card-avatar" />
+        ) : (
+          <div className="creator-card-avatar-fallback" aria-hidden="true">{avatarLetter}</div>
+        )}
+        {/* 名稱 + meta */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <h3 className="creator-name" style={{ margin: 0 }}>{displayName}</h3>
+            <span className={creator.acceptingOrders ? 'badge-accepting' : 'badge-paused'}>
+              {creator.acceptingOrders ? '接單中' : '暫停接單'}
+            </span>
+          </div>
+          {creator.location && (
+            <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--muted)' }}>{creator.location}</p>
+          )}
+          {creator.priceRange && (
+            <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--muted)' }}>{creator.priceRange}</p>
+          )}
+        </div>
       </div>
       {creator.bio && <p className="creator-bio">{creator.bio}</p>}
       {creator.styleTags.length > 0 && (
         <div className="design-tags">
-          {creator.styleTags.map((t) => (
-            <span key={t} className="tag">{t}</span>
-          ))}
+          {creator.styleTags.map((t) => <span key={t} className="tag">{t}</span>)}
         </div>
       )}
       <p className="hint" style={{ marginTop: 6, fontSize: 13 }}>設計圖：{creator.designCount ?? 0} 個</p>
-      <p className="hint" style={{ fontSize: 12, color: 'var(--primary)' }}>點擊查看詳細資訊</p>
     </div>
   );
 }
 
+// ─── Design Detail Modal (3-column) ──────────────────────────
+
 function DesignDetailModal({
   design,
+  designs,
+  selectedIdx,
   authUser,
   onClose,
+  onNavigate,
   onViewCreator,
 }: {
   design: DesignDto;
+  designs: DesignDto[];
+  selectedIdx: number;
   authUser: AuthUser | null;
   onClose: () => void;
+  onNavigate: (dir: -1 | 1) => void;
   onViewCreator: (username: string) => void;
 }) {
-  const licenseLabel = design.licenseType === 'commercial' ? '商業授權' : '個人使用';
-  const canContact = authUser && (authUser.role === 'member' || authUser.role === 'pro' || authUser.role === 'admin');
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const canPrev = selectedIdx > 0;
+  const canNext = selectedIdx < designs.length - 1;
+  const creator = design.creator;
+  const creatorDisplayName = creator?.displayName || creator?.username;
+
+  // Keyboard navigation
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (lightboxOpen) {
+        if (e.key === 'Escape') setLightboxOpen(false);
+        return;
+      }
+      if (e.key === 'Escape') onClose();
+      if (e.key === 'ArrowLeft' && canPrev) onNavigate(-1);
+      if (e.key === 'ArrowRight' && canNext) onNavigate(1);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, onNavigate, canPrev, canNext, lightboxOpen]);
 
   return (
     <div
@@ -373,35 +402,75 @@ function DesignDetailModal({
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="modal-box market-detail-modal-box">
+        {/* ── Modal header ── */}
         <div className="modal-header">
-          <h3>{design.title}</h3>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            {/* Prev / next arrows */}
+            <button
+              type="button"
+              className="ghost icon-btn"
+              onClick={() => onNavigate(-1)}
+              disabled={!canPrev}
+              aria-label="上一個設計圖"
+              style={{ opacity: canPrev ? 1 : 0.3 }}
+            >
+              ←
+            </button>
+            <h3 style={{ margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {design.title}
+            </h3>
+            <button
+              type="button"
+              className="ghost icon-btn"
+              onClick={() => onNavigate(1)}
+              disabled={!canNext}
+              aria-label="下一個設計圖"
+              style={{ opacity: canNext ? 1 : 0.3 }}
+            >
+              →
+            </button>
+          </div>
           <button type="button" className="ghost icon-btn" onClick={onClose} aria-label="關閉">✕</button>
         </div>
 
-        <div className="market-detail-layout">
-          {design.previewImage ? (
-            <div className="market-detail-preview-col">
-              <img
-                src={design.previewImage}
-                alt={design.title}
-                className="market-detail-preview"
-              />
-            </div>
-          ) : (
-            <div className="market-detail-preview-col market-detail-no-preview">
-              <span className="hint">無預覽圖</span>
-            </div>
-          )}
+        {/* ── 3-column body ── */}
+        <div className="market-detail-three-col">
+          {/* Col 1: Preview image */}
+          <div className="market-detail-preview-col">
+            {design.previewImage ? (
+              <div
+                className="market-detail-preview-btn"
+                onClick={() => setLightboxOpen(true)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === 'Enter' && setLightboxOpen(true)}
+                aria-label="點擊放大預覽"
+                title="點擊放大"
+              >
+                <img src={design.previewImage} alt={design.title} className="market-detail-preview" />
+                <span className="market-detail-preview-zoom-hint">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+                  </svg>
+                </span>
+              </div>
+            ) : (
+              <div className="market-detail-preview-col market-detail-no-preview">
+                <span className="hint">無預覽圖</span>
+              </div>
+            )}
+          </div>
 
+          {/* Col 2: Info */}
           <div className="market-detail-info-col">
             <div className="market-detail-badges">
-              <span className="design-license-badge">{licenseLabel}</span>
-              {design.creator && (
-                design.creator.acceptingOrders ? (
-                  <span className="badge-accepting">接單中</span>
-                ) : (
-                  <span className="badge-paused">暫停接單</span>
-                )
+              <span className={`badge-license${design.licenseType === 'commercial' ? ' commercial' : ''}`}>
+                {design.licenseType === 'commercial' ? '商業授權' : '個人使用'}
+              </span>
+              {creator && (
+                creator.acceptingOrders
+                  ? <span className="badge-accepting">接單中</span>
+                  : <span className="badge-paused">暫停接單</span>
               )}
             </div>
 
@@ -412,7 +481,12 @@ function DesignDetailModal({
             )}
 
             {design.estimatedTime && (
-              <p className="hint" style={{ fontSize: 13 }}>預計製作時間：{design.estimatedTime}</p>
+              <p className="hint" style={{ fontSize: 13 }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 4, verticalAlign: 'middle' }} aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                </svg>
+                {design.estimatedTime}
+              </p>
             )}
 
             {design.description && (
@@ -421,192 +495,82 @@ function DesignDetailModal({
 
             {design.tags.length > 0 && (
               <div className="design-tags" style={{ marginTop: 4 }}>
-                {design.tags.map((t) => (
-                  <span key={t} className="tag">{t}</span>
-                ))}
+                {design.tags.map((t) => <span key={t} className="tag">{t}</span>)}
               </div>
             )}
+          </div>
 
-            {design.creator && (
-              <div className="market-detail-creator-section">
-                <div className="market-detail-creator-row">
-                  <span className="market-detail-creator-name">by {design.creator.username}</span>
+          {/* Col 3: Creator mini */}
+          {creator && (
+            <div className="market-detail-creator-mini">
+              {/* 頭像 */}
+              {creator.avatarImage ? (
+                <img src={creator.avatarImage} alt={creatorDisplayName ?? ''} className="market-detail-creator-avatar" />
+              ) : (
+                <div className="market-detail-creator-avatar market-detail-creator-avatar-fallback" aria-hidden="true">
+                  {(creatorDisplayName ?? '?').charAt(0).toUpperCase()}
                 </div>
-                {canContact ? (
-                  <button
-                    type="button"
-                    className="primary market-detail-creator-btn"
-                    onClick={() => onViewCreator(design.creator!.username)}
-                  >
-                    查看創作者主頁
-                  </button>
-                ) : (
-                  <p className="hint" style={{ fontSize: 12 }}>
-                    <button
-                      type="button"
-                      className="ghost market-detail-creator-btn"
-                      onClick={() => onViewCreator(design.creator!.username)}
-                    >
-                      查看創作者主頁
-                    </button>
-                  </p>
+              )}
+              <div>
+                <p style={{ margin: '0 0 2px', fontWeight: 600, fontSize: 14 }}>{creatorDisplayName}</p>
+                {creator.location && (
+                  <p style={{ margin: 0, fontSize: 12, color: 'var(--muted)' }}>{creator.location}</p>
                 )}
               </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+              {creator.acceptingOrders
+                ? <span className="badge-accepting" style={{ fontSize: 12 }}>接單中</span>
+                : <span className="badge-paused" style={{ fontSize: 12 }}>暫停接單</span>
+              }
 
-function CreatorProfileModal({
-  creator,
-  loading,
-  authUser,
-  onClose,
-  onViewDesign,
-}: {
-  creator: MarketCreatorDto | null;
-  loading: boolean;
-  authUser: AuthUser | null;
-  onClose: () => void;
-  onViewDesign: (design: DesignDto) => void;
-}) {
-  const canContact = authUser && (authUser.role === 'member' || authUser.role === 'pro' || authUser.role === 'admin');
-  const links = creator?.externalLinks ?? [];
+              <button
+                type="button"
+                className="primary"
+                style={{ fontSize: 13, marginTop: 4 }}
+                onClick={() => { onClose(); onViewCreator(creator.username); }}
+              >
+                查看完整主頁
+              </button>
 
-  return (
-    <div
-      className="modal-backdrop"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="modal-box market-creator-modal-box">
-        <div className="modal-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <h3 style={{ margin: 0 }}>{creator?.username ?? '創作者主頁'}</h3>
-            {creator && (
-              <span className={creator.acceptingOrders ? 'badge-accepting' : 'badge-paused'}>
-                {creator.acceptingOrders ? '接單中' : '暫停接單'}
-              </span>
-            )}
-          </div>
-          <button type="button" className="ghost icon-btn" onClick={onClose} aria-label="關閉">✕</button>
-        </div>
-
-        {loading ? (
-          <div className="market-creator-modal-loading">
-            <p className="hint">載入中...</p>
-          </div>
-        ) : creator ? (
-          <div className="market-creator-modal-body">
-            {creator.bio && (
-              <div className="market-creator-section">
-                <p className="market-creator-bio-full">{creator.bio}</p>
-              </div>
-            )}
-
-            {creator.styleTags.length > 0 && (
-              <div className="market-creator-section">
-                <p className="market-creator-section-label">風格標籤</p>
-                <div className="design-tags">
-                  {creator.styleTags.map((t) => (
-                    <span key={t} className="tag">{t}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="market-creator-section">
-              <p className="market-creator-section-label">聯絡方式</p>
-              {canContact ? (
-                links.length > 0 ? (
-                  <div className="creator-links">
-                    {links.map((l, i) => (
-                      <a key={i} href={l.url} target="_blank" rel="noopener noreferrer" className="link-btn">
-                        {l.label}
-                      </a>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="hint" style={{ fontSize: 13 }}>此創作者尚未設定聯絡方式</p>
-                )
-              ) : (
-                <p className="hint" style={{ fontSize: 13 }}>登入後可查看聯絡方式</p>
+              {!authUser && (
+                <p className="hint" style={{ fontSize: 12 }}>登入後可查看聯絡方式</p>
               )}
             </div>
-
-            {creator.designs && creator.designs.length > 0 && (
-              <div className="market-creator-section">
-                <p className="market-creator-section-label">
-                  設計圖（{creator.designs.length} 個）
-                </p>
-                <div className="market-creator-designs-grid">
-                  {creator.designs.map((d) => (
-                    <div
-                      key={d.id}
-                      className="market-creator-design-thumb"
-                      onClick={() => onViewDesign({ ...d, creator: { username: creator.username, acceptingOrders: creator.acceptingOrders } })}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => e.key === 'Enter' && onViewDesign({ ...d, creator: { username: creator.username, acceptingOrders: creator.acceptingOrders } })}
-                    >
-                      {d.previewImage ? (
-                        <img
-                          src={d.previewImage}
-                          alt={d.title}
-                          className="market-creator-design-thumb-img"
-                        />
-                      ) : (
-                        <div className="market-creator-design-thumb-placeholder">
-                          <span className="hint" style={{ fontSize: 11 }}>無預覽</span>
-                        </div>
-                      )}
-                      <p className="market-creator-design-thumb-title">{d.title}</p>
-                      {d.price != null ? (
-                        <p className="market-creator-design-thumb-price">NT$ {d.price.toLocaleString()}</p>
-                      ) : (
-                        <p className="market-creator-design-thumb-price hint">面議</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {creator.designs && creator.designs.length === 0 && (
-              <div className="market-creator-section">
-                <p className="hint" style={{ fontSize: 13 }}>此創作者目前尚未上架任何設計圖</p>
-              </div>
-            )}
-          </div>
-        ) : null}
+          )}
+        </div>
       </div>
+
+      {/* ── Lightbox ── */}
+      {lightboxOpen && design.previewImage && (
+        <div
+          className="lightbox-backdrop"
+          onClick={() => setLightboxOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="預覽圖放大"
+          style={{ zIndex: 1100 }}
+        >
+          <img
+            src={design.previewImage}
+            alt={design.title}
+            className="lightbox-fullimg"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button className="lightbox-close" onClick={() => setLightboxOpen(false)} aria-label="關閉放大">✕</button>
+        </div>
+      )}
     </div>
   );
 }
 
-function Pagination({
-  page,
-  totalPages,
-  onChange,
-}: {
-  page: number;
-  totalPages: number;
-  onChange: (p: number) => void;
-}) {
+// ─── Pagination ───────────────────────────────────────────────
+
+function Pagination({ page, totalPages, onChange }: { page: number; totalPages: number; onChange: (p: number) => void }) {
   if (totalPages <= 1) return null;
   return (
     <div className="pagination">
-      <button className="ghost" disabled={page <= 1} onClick={() => onChange(page - 1)}>
-        ← 上一頁
-      </button>
-      <span className="hint">
-        {page} / {totalPages}
-      </span>
-      <button className="ghost" disabled={page >= totalPages} onClick={() => onChange(page + 1)}>
-        下一頁 →
-      </button>
+      <button className="ghost" disabled={page <= 1} onClick={() => onChange(page - 1)}>← 上一頁</button>
+      <span className="hint">{page} / {totalPages}</span>
+      <button className="ghost" disabled={page >= totalPages} onClick={() => onChange(page + 1)}>下一頁 →</button>
     </div>
   );
 }

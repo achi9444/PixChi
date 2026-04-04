@@ -69,12 +69,24 @@ export type DesignDto = {
   previewImage?: string | null;
   status?: 'draft' | 'published';
   updatedAt: number;
-  creator?: { username: string; acceptingOrders: boolean };
+  creator?: {
+    username: string;
+    displayName?: string | null;
+    avatarImage?: string | null;
+    location?: string | null;
+    acceptingOrders: boolean;
+  };
 };
 
 export type ExternalLink = { label: string; url: string };
 
 export type CreatorProfileDto = {
+  displayName?: string | null;
+  avatarImage?: string | null;
+  location?: string | null;
+  priceRange?: string | null;
+  turnaround?: string | null;
+  specialties?: string[];
   bio?: string | null;
   styleTags: string[];
   externalLinks: ExternalLink[];
@@ -83,7 +95,21 @@ export type CreatorProfileDto = {
   designCount?: number;
 };
 
-export type MarketCreatorDto = CreatorProfileDto & { username: string; designs?: DesignDto[] };
+export type MarketCreatorDto = {
+  username: string;
+  displayName?: string | null;
+  avatarImage?: string | null;
+  location?: string | null;
+  priceRange?: string | null;
+  turnaround?: string | null;
+  specialties?: string[];
+  bio?: string | null;
+  styleTags: string[];
+  externalLinks: ExternalLink[];
+  acceptingOrders: boolean;
+  designCount?: number;
+  designs?: DesignDto[];
+};
 
 export type MarketDesignsResult = {
   designs: DesignDto[];
@@ -245,6 +271,18 @@ export class ApiClient {
     return this.requestJson<{ user?: AuthUser }>('/api/auth/me', { cache: 'no-cache' });
   }
 
+  getAuthMe() {
+    return this.requestJson<{ user?: AuthUser & { createdAt?: number } }>('/api/auth/me', { cache: 'no-cache' });
+  }
+
+  changePassword(oldPassword: string, newPassword: string) {
+    return this.requestJson<{ ok?: boolean }>('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPassword, newPassword }),
+    });
+  }
+
   async logout() {
     const refreshToken = this.getRefreshToken();
     if (!refreshToken) return;
@@ -316,12 +354,14 @@ export class ApiClient {
 
   // ─── Market ───────────────────────────────────────────────
 
-  getMarketDesigns(params?: { page?: number; limit?: number; q?: string; license?: 'personal' | 'commercial' }) {
+  getMarketDesigns(params?: { page?: number; limit?: number; q?: string; license?: 'personal' | 'commercial'; sort?: 'newest' | 'price_asc' | 'price_desc'; tags?: string }) {
     const qs = new URLSearchParams();
     if (params?.page) qs.set('page', String(params.page));
     if (params?.limit) qs.set('limit', String(params.limit));
     if (params?.q) qs.set('q', params.q);
     if (params?.license) qs.set('license', params.license);
+    if (params?.sort && params.sort !== 'newest') qs.set('sort', params.sort);
+    if (params?.tags) qs.set('tags', params.tags);
     const query = qs.toString();
     return this.requestJson<MarketDesignsResult>(`/api/market/designs${query ? '?' + query : ''}`, { cache: 'no-cache' });
   }
@@ -346,7 +386,7 @@ export class ApiClient {
     return this.requestJson<CreatorProfileDto>('/api/creator/profile', { cache: 'no-cache' });
   }
 
-  putCreatorProfile(data: Partial<Pick<CreatorProfileDto, 'bio' | 'styleTags' | 'externalLinks' | 'acceptingOrders' | 'watermarkText'>>) {
+  putCreatorProfile(data: Partial<Pick<CreatorProfileDto, 'displayName' | 'avatarImage' | 'location' | 'priceRange' | 'turnaround' | 'specialties' | 'bio' | 'styleTags' | 'externalLinks' | 'acceptingOrders' | 'watermarkText'>>) {
     return this.requestJson<{ ok?: boolean }>('/api/creator/profile', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

@@ -13,6 +13,8 @@ marketRouter.get('/designs', async (req, res) => {
       limit: z.coerce.number().int().min(1).max(50).default(20),
       q: z.string().trim().max(100).optional(),
       license: z.enum(['personal', 'commercial']).optional(),
+      sort: z.enum(['newest', 'price_asc', 'price_desc']).default('newest'),
+      tags: z.string().trim().max(200).optional(),
     })
     .safeParse(req.query);
 
@@ -21,7 +23,7 @@ marketRouter.get('/designs', async (req, res) => {
     return;
   }
 
-  const { page, limit, q, license } = query.data;
+  const { page, limit, q, license, sort, tags } = query.data;
   const skip = (page - 1) * limit;
 
   const where: any = { status: 'published' };
@@ -33,17 +35,30 @@ marketRouter.get('/designs', async (req, res) => {
       { tags: { contains: q } },
     ];
   }
+  if (tags) {
+    const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean);
+    if (tagList.length > 0) {
+      where.AND = tagList.map((t) => ({ tags: { contains: t } }));
+    }
+  }
+
+  let orderBy: any = { updatedAt: 'desc' };
+  if (sort === 'price_asc') orderBy = { price: 'asc' };
+  else if (sort === 'price_desc') orderBy = { price: 'desc' };
 
   const [designs, total] = await Promise.all([
     prisma.design.findMany({
       where,
       skip,
       take: limit,
-      orderBy: { updatedAt: 'desc' },
+      orderBy,
       include: {
         creator: {
           select: {
             id: true,
+            displayName: true,
+            avatarImage: true,
+            location: true,
             acceptingOrders: true,
             user: { select: { username: true } },
           },
@@ -66,6 +81,9 @@ marketRouter.get('/designs', async (req, res) => {
       updatedAt: d.updatedAt.getTime(),
       creator: {
         username: d.creator.user.username,
+        displayName: d.creator.displayName ?? null,
+        avatarImage: d.creator.avatarImage ?? null,
+        location: d.creator.location ?? null,
         acceptingOrders: d.creator.acceptingOrders,
       },
     })),
@@ -94,12 +112,13 @@ marketRouter.get('/creators', async (req, res) => {
   const { page, limit, q, accepting } = query.data;
   const skip = (page - 1) * limit;
 
-  const where: any = { user: { role: 'pro', isActive: true } };
+  const where: any = { user: { role: { in: ['pro', 'admin'] }, isActive: true } };
   if (accepting !== undefined) where.acceptingOrders = accepting === 'true';
   if (q) {
     where.OR = [
       { bio: { contains: q } },
       { styleTags: { contains: q } },
+      { displayName: { contains: q } },
       { user: { username: { contains: q } } },
     ];
   }
@@ -121,9 +140,12 @@ marketRouter.get('/creators', async (req, res) => {
   res.json({
     creators: profiles.map((p) => ({
       username: p.user.username,
-      bio: p.bio,
+      displayName: p.displayName ?? null,
+      avatarImage: p.avatarImage ?? null,
+      location: p.location ?? null,
+      priceRange: p.priceRange ?? null,
+      bio: p.bio ?? null,
       styleTags: p.styleTags ? JSON.parse(p.styleTags) : [],
-      externalLinks: p.externalLinks ? JSON.parse(p.externalLinks) : [],
       acceptingOrders: p.acceptingOrders,
       designCount: p._count.designs,
     })),
@@ -142,7 +164,7 @@ marketRouter.get('/creators/:username', async (req, res) => {
   }
 
   const profile = await prisma.creatorProfile.findFirst({
-    where: { user: { username, role: 'pro', isActive: true } },
+    where: { user: { username, role: { in: ['pro', 'admin'] }, isActive: true } },
     include: {
       user: { select: { username: true } },
       designs: {
@@ -160,7 +182,13 @@ marketRouter.get('/creators/:username', async (req, res) => {
 
   res.json({
     username: profile.user.username,
-    bio: profile.bio,
+    displayName: profile.displayName ?? null,
+    avatarImage: profile.avatarImage ?? null,
+    location: profile.location ?? null,
+    priceRange: profile.priceRange ?? null,
+    turnaround: profile.turnaround ?? null,
+    specialties: profile.specialties ? JSON.parse(profile.specialties) : [],
+    bio: profile.bio ?? null,
     styleTags: profile.styleTags ? JSON.parse(profile.styleTags) : [],
     externalLinks: profile.externalLinks ? JSON.parse(profile.externalLinks) : [],
     acceptingOrders: profile.acceptingOrders,

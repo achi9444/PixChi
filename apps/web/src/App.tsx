@@ -3,6 +3,8 @@ import TopBar, { type AppPage } from './components/TopBar';
 import PalettePage from './components/PalettePage';
 import MarketPage from './components/MarketPage';
 import CreatorPage from './components/CreatorPage';
+import UserProfilePage from './components/UserProfilePage';
+import CreatorPublicPage from './components/CreatorPublicPage';
 import PublishDesignModal from './components/PublishDesignModal';
 import ExportModal, { type ExportMode } from './components/ExportModal';
 import StatsPanel from './components/StatsPanel';
@@ -270,8 +272,16 @@ function getPageFromHash(): AppPage {
   const hash = (typeof window !== 'undefined' ? window.location.hash : '').toLowerCase();
   if (hash.includes('palette')) return 'palette';
   if (hash.includes('market')) return 'market';
+  if (hash.startsWith('#/c/')) return 'creator-public';
   if (hash.includes('creator')) return 'creator';
+  if (hash.includes('profile')) return 'profile';
   return 'main';
+}
+
+function getCreatorPublicUsernameFromHash(): string {
+  const hash = (typeof window !== 'undefined' ? window.location.hash : '');
+  const m = hash.match(/^#\/c\/([^/?#]+)/i);
+  return m ? decodeURIComponent(m[1]).toLowerCase() : '';
 }
 
 export default function App() {
@@ -308,6 +318,7 @@ export default function App() {
   const [customPaletteGroups, setCustomPaletteGroups] = useState<CustomPaletteGroup[]>([]);
   const [activeGroupName, setActiveGroupName] = useState('');
   const [page, setPage] = useState<AppPage>(() => getPageFromHash());
+  const [creatorPublicUsername, setCreatorPublicUsername] = useState<string>(() => getCreatorPublicUsernameFromHash());
   const [paletteTab, setPaletteTab] = useState<'builtin' | 'custom'>('builtin');
   const [builtinPreviewGroupName, setBuiltinPreviewGroupName] = useState('');
   const [paletteNewGroupName, setPaletteNewGroupName] = useState('');
@@ -346,6 +357,7 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginErrorText, setLoginErrorText] = useState('');
   const proMode = authUser?.role === 'pro' || authUser?.role === 'admin';
+  const [creatorAvatarImage, setCreatorAvatarImage] = useState<string | null>(null);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [publishPreviewUrl, setPublishPreviewUrl] = useState('');
   const [publishDefaultWatermark, setPublishDefaultWatermark] = useState('');
@@ -481,7 +493,10 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   }, [paletteEditGroupId, customPaletteGroups]);
 
   useEffect(() => {
-    const onHash = () => setPage(getPageFromHash());
+    const onHash = () => {
+      setPage(getPageFromHash());
+      setCreatorPublicUsername(getCreatorPublicUsernameFromHash());
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
@@ -819,6 +834,16 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       }),
     [authAccessToken, authRefreshToken, handleTokenRefreshed, handleUnauthorized]
   );
+
+  // 載入 / 更新創作者大頭貼
+  const refreshCreatorAvatar = useCallback(() => {
+    if (!proMode) { setCreatorAvatarImage(null); return; }
+    apiClient.getCreatorProfile().then((p) => setCreatorAvatarImage(p.avatarImage ?? null)).catch(() => {});
+  }, [apiClient, proMode]);
+
+  useEffect(() => {
+    refreshCreatorAvatar();
+  }, [refreshCreatorAvatar]);
 
   useEffect(() => {
     if (!authAccessToken && !authRefreshToken) return;
@@ -2008,7 +2033,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       canvas.removeEventListener('wheel', onWheelNative);
       wrap.removeEventListener('wheel', onWheelNative);
     };
-  }, []);
+  }, [page]);
 
   const onImageSelected = async (file: File | null) => {
     if (!file) return;
@@ -2619,7 +2644,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   };
 
   const onCanvasMouseDown = (ev: React.MouseEvent<HTMLCanvasElement>) => {
-    if (cropToolEnabled && imageBitmap) {
+    if (cropToolEnabled && imageBitmap && !converted) {
       const p = getPreviewPointer(ev.clientX, ev.clientY);
       if (!p) return;
       const mode = getCropDragModeAt(p.canvasX, p.canvasY) ?? 'new';
@@ -2662,7 +2687,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   };
 
   const onCanvasMouseMove = (ev: React.MouseEvent<HTMLCanvasElement>) => {
-    if (cropToolEnabled && imageBitmap) {
+    if (cropToolEnabled && imageBitmap && !converted) {
       const p = getPreviewPointer(ev.clientX, ev.clientY);
       if (!p) {
         if (!isCropDraggingRef.current && cropHoverMode !== null) setCropHoverMode(null);
@@ -2858,7 +2883,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   };
 
   const onCanvasMouseLeave = () => {
-    if (cropToolEnabled && imageBitmap) {
+    if (cropToolEnabled && imageBitmap && !converted) {
       isCropDraggingRef.current = false;
       cropDragStartRef.current = null;
       cropDragModeRef.current = null;
@@ -2879,7 +2904,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   };
 
   const onCanvasMouseUp = () => {
-    if (cropToolEnabled && imageBitmap) {
+    if (cropToolEnabled && imageBitmap && !converted) {
       isCropDraggingRef.current = false;
       cropDragStartRef.current = null;
       cropDragModeRef.current = null;
@@ -3652,10 +3677,19 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setShortcutConfig(buildDefaultShortcutConfig());
   };
 
-  const navigatePage = (next: AppPage) => {
+  const navigatePage = (next: AppPage, username?: string) => {
+    if (next === 'creator-public' && username) {
+      setCreatorPublicUsername(username);
+      setPage('creator-public');
+      if (typeof window !== 'undefined') window.location.hash = `#/c/${encodeURIComponent(username)}`;
+      return;
+    }
     setPage(next);
     if (typeof window !== 'undefined') {
-      const hashMap: Record<AppPage, string> = { main: '#/', palette: '#/palette', market: '#/market', creator: '#/creator' };
+      const hashMap: Record<AppPage, string> = {
+        main: '#/', palette: '#/palette', market: '#/market',
+        creator: '#/creator', profile: '#/profile', 'creator-public': '#/',
+      };
       window.location.hash = hashMap[next];
     }
   };
@@ -3821,6 +3855,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           setAuthPanelOpen(false);
           setLoginErrorText('');
         }}
+        avatarImage={creatorAvatarImage}
         page={page}
         onNavigate={navigatePage}
         proMode={proMode}
@@ -3858,10 +3893,25 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onClose={() => setPublishModalOpen(false)}
         />
       )}
-      {page === 'market' ? (
-        <MarketPage apiClient={apiClient} authUser={authUser} />
-      ) : page === 'creator' && proMode ? (
-        <CreatorPage apiClient={apiClient} />
+      {page === 'creator-public' ? (
+        <CreatorPublicPage
+          username={creatorPublicUsername}
+          apiClient={apiClient}
+          authUser={authUser}
+          onNavigate={navigatePage}
+        />
+      ) : page === 'market' ? (
+        <MarketPage apiClient={apiClient} authUser={authUser} onNavigate={navigatePage} />
+      ) : page === 'profile' || page === 'creator' ? (
+        authUser ? (
+          <UserProfilePage
+            apiClient={apiClient}
+            authUser={authUser}
+            initialTab={page === 'creator' ? 'creator' : 'account'}
+            onNavigate={navigatePage}
+            onProfileSaved={refreshCreatorAvatar}
+          />
+        ) : null
       ) : page === 'palette' ? (
         <PalettePage
           paletteTab={paletteTab}

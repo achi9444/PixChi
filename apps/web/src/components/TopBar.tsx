@@ -2,7 +2,7 @@ import { useRef } from 'react';
 import AuthPanel from './AuthPanel';
 import type { AuthUser } from '../services/api';
 
-export type AppPage = 'main' | 'palette' | 'market' | 'creator';
+export type AppPage = 'main' | 'palette' | 'market' | 'creator' | 'profile' | 'creator-public';
 
 type Props = {
   // auth
@@ -19,6 +19,8 @@ type Props = {
   onUsernameChange: (v: string) => void;
   onPasswordChange: (v: string) => void;
   onCloseAuthPanel: () => void;
+  // avatar
+  avatarImage?: string | null;
   // page nav
   page: AppPage;
   onNavigate: (page: AppPage) => void;
@@ -37,6 +39,7 @@ export default function TopBar({
   loginUsername, loginPassword, loginErrorText,
   onToggleAuthPanel, onLogin, onRegister, onLogout,
   onUsernameChange, onPasswordChange, onCloseAuthPanel,
+  avatarImage,
   page, onNavigate,
   proMode, isPdfBusy, hasConverted,
   onImportPdfFile, onOpenExportModal, onPublishToMarket,
@@ -169,7 +172,8 @@ export default function TopBar({
           onUsernameChange={onUsernameChange}
           onPasswordChange={onPasswordChange}
           onClosePanel={onCloseAuthPanel}
-          onAvatarClick={() => onNavigate('creator')}
+          onAvatarClick={() => onNavigate('profile')}
+          avatarImage={avatarImage}
         />
       </div>
     </header>
