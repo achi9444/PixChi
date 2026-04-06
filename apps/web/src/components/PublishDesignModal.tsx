@@ -34,6 +34,12 @@ export default function PublishDesignModal({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
   // 即時重新繪製浮水印預覽
   function applyWatermark(text: string) {
     setWatermark(text);

@@ -94,8 +94,8 @@ async function seedPalette() {
     const groupName = String(group.name ?? '').trim();
     if (!groupName) continue;
     groupIndex += 1;
-    const groupCodeBase = slugify(groupName) || `group-${groupIndex}`;
-    const groupCode = `${groupCodeBase}-${groupIndex}`;
+    const slug = slugify(groupName) || 'group';
+    const groupCode = `${String(groupIndex).padStart(2, '0')}-${slug}`;
 
     const created = await prisma.paletteGroup.create({
       data: {

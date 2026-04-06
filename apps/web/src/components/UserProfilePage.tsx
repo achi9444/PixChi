@@ -111,7 +111,7 @@ export default function UserProfilePage({ apiClient, authUser, initialTab = 'acc
       <div className="profile-compact-header">
         <div className={`profile-avatar profile-avatar--sm`}>
           {isProOrAdmin && avatarImage ? (
-            <img src={avatarImage} alt={authUser.username} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+            <img src={avatarImage} alt={authUser.username} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
           ) : (
             <span>{avatarLetter}</span>
           )}

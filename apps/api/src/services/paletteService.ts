@@ -5,7 +5,7 @@ export async function listPaletteGroups(role: UserRole = 'guest') {
   const privileged = role === 'pro' || role === 'admin';
   const groups = await prisma.paletteGroup.findMany({
     where: privileged ? undefined : { isSystem: true },
-    orderBy: [{ isSystem: 'desc' }, { name: 'asc' }],
+    orderBy: [{ isSystem: 'desc' }, { code: 'asc' }],
     select: {
       id: true,
       code: true,

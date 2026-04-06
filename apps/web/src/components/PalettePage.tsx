@@ -20,6 +20,13 @@ function hexToRgb(hex: string): [number, number, number] {
   const v = hex.replace('#', '');
   return [parseInt(v.slice(0, 2), 16), parseInt(v.slice(2, 4), 16), parseInt(v.slice(4, 6), 16)];
 }
+// 計算相對亮度，決定文字要用白或黑
+function swatchInkColor(hex: string): string {
+  const [r, g, b] = hexToRgb(normalizeColorHex(hex));
+  // sRGB 亮度公式
+  const L = 0.2126 * (r / 255) + 0.7152 * (g / 255) + 0.0722 * (b / 255);
+  return L > 0.45 ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.9)';
+}
 
 // ---- props ----
 type Props = {
@@ -66,6 +73,16 @@ export default function PalettePage({
 }: Props) {
   const [customEditColorIndex, setCustomEditColorIndex] = useState<number | null>(null);
   const [customEditColorHex, setCustomEditColorHex] = useState('#ffffff');
+
+  // ESC 關閉色號編輯 popover
+  useEffect(() => {
+    if (customEditColorIndex == null) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setCustomEditColorIndex(null);
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [customEditColorIndex]);
 
   // 當編輯群組或選取色號改變時，同步 hex 輸入框
   useEffect(() => {
@@ -164,23 +181,69 @@ export default function PalettePage({
                 </>
               ) : (
                 <>
+                  {/* ── 新建群組 ── */}
                   <div className="row one">
                     <button type="button" className="ghost" onClick={() => onCreateCustomGroup(null)}>
                       新建空白色庫
                     </button>
                   </div>
-                  <p className="hint">請在右側卡片點選要編輯的自訂群組，進入後可直接點色票改色。</p>
+                  <p className="hint">點選右側群組卡片進入編輯模式，可直接點色票改色。</p>
+
                   {editablePaletteGroup && (
                     <>
-                      <div className="row three">
-                        <input type="text" value={paletteNewGroupName} onChange={(e) => onSetPaletteNewGroupName(e.target.value)} />
-                        <button type="button" className="ghost" onClick={onUpdateCustomGroupName}>更新群組名</button>
-                        <button type="button" className="ghost" onClick={onDeleteCustomGroup}>刪除群組</button>
+                      <hr />
+
+                      {/* ── 群組管理 ── */}
+                      <h3>群組管理</h3>
+                      <label>
+                        群組名稱
+                        <input
+                          type="text"
+                          value={paletteNewGroupName}
+                          onChange={(e) => onSetPaletteNewGroupName(e.target.value)}
+                        />
+                      </label>
+                      <div className="row two" style={{ marginTop: 8 }}>
+                        <button type="button" className="ghost" onClick={onUpdateCustomGroupName}>更新名稱</button>
+                        <button type="button" className="danger" onClick={onDeleteCustomGroup}>刪除群組</button>
                       </div>
-                      <div className="row three">
-                        <input type="text" placeholder="色號名稱" value={paletteNewColorName} onChange={(e) => onSetPaletteNewColorName(e.target.value)} />
-                        <input type="color" value={normalizeColorHex(paletteNewColorHex).toLowerCase()} onChange={(e) => onSetPaletteNewColorHex(e.target.value)} />
-                        <button type="button" className="ghost" onClick={onAddColorToCustomGroup}>新增色號</button>
+
+                      <hr />
+
+                      {/* ── 新增色號 ── */}
+                      <h3>新增色號</h3>
+                      <label>
+                        色號名稱
+                        <input
+                          type="text"
+                          placeholder="例如 A1、紅色…"
+                          value={paletteNewColorName}
+                          onChange={(e) => onSetPaletteNewColorName(e.target.value)}
+                        />
+                      </label>
+                      <label style={{ marginTop: 8 }}>
+                        選色
+                        <div className="palette-add-color-row">
+                          <input
+                            type="color"
+                            value={normalizeColorHex(paletteNewColorHex).toLowerCase()}
+                            onChange={(e) => onSetPaletteNewColorHex(e.target.value)}
+                            style={{ width: 48, height: 36, padding: '2px 4px', flexShrink: 0 }}
+                          />
+                          <input
+                            type="text"
+                            className="palette-add-color-hex"
+                            value={paletteNewColorHex}
+                            onChange={(e) => onSetPaletteNewColorHex(e.target.value)}
+                            onBlur={(e) => onSetPaletteNewColorHex(normalizeColorHex(e.target.value))}
+                            placeholder="#RRGGBB"
+                            maxLength={7}
+                            spellCheck={false}
+                          />
+                        </div>
+                      </label>
+                      <div className="row one" style={{ marginTop: 8 }}>
+                        <button type="button" className="primary" onClick={onAddColorToCustomGroup}>新增色號</button>
                       </div>
                     </>
                   )}
@@ -285,35 +348,69 @@ export default function PalettePage({
                       </button>
                       {customEditColorIndex === idx && (
                         <div className="palette-color-popover" onClick={(e) => e.stopPropagation()}>
-                          <div className="palette-color-popover-head">
-                            <strong>{c.name}</strong>
-                            <button type="button" className="ghost" onClick={() => setCustomEditColorIndex(null)}>
-                              關閉
+                          {/* 大色塊 = 選色器觸發區，關閉鈕在右上角 */}
+                          <label
+                            className="palette-color-popover-swatch"
+                            style={{ background: normalizeColorHex(customEditColorHex), cursor: 'pointer' }}
+                            title="點擊選色"
+                          >
+                            <button
+                              type="button"
+                              className="palette-color-popover-close"
+                              onClick={(e) => { e.preventDefault(); setCustomEditColorIndex(null); }}
+                              aria-label="關閉"
+                            >
+                              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                              </svg>
                             </button>
-                          </div>
-                          <input
-                            type="color"
-                            value={normalizeColorHex(customEditColorHex).toLowerCase()}
-                            onChange={(e) => setCustomEditColorHex(e.target.value)}
-                            aria-label="選擇顏色"
-                          />
-                          <div className="row two">
+                            <span className="palette-color-popover-swatch-label" style={{ color: swatchInkColor(customEditColorHex) }}>
+                              {c.name}
+                            </span>
+                            <span className="palette-color-popover-swatch-hint" style={{ color: swatchInkColor(customEditColorHex) }}>
+                              點擊選色
+                            </span>
                             <input
-                              type="text"
-                              value={customEditColorHex.toUpperCase()}
+                              type="color"
+                              value={normalizeColorHex(customEditColorHex).toLowerCase()}
                               onChange={(e) => setCustomEditColorHex(e.target.value)}
-                              onBlur={applyCustomEditHex}
-                              onKeyDown={(e) => { if (e.key === 'Enter') applyCustomEditHex(); }}
-                              placeholder="#RRGGBB"
+                              aria-label="選擇顏色"
+                              style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', top: 0, left: 0, cursor: 'pointer' }}
                             />
-                            <button type="button" className="primary" onClick={applyCustomEditHex}>
-                              套用
-                            </button>
+                          </label>
+                          {/* 標題列（只留標題，無關閉鈕） */}
+                          <div className="palette-color-popover-head">
+                            <strong>編輯色號</strong>
                           </div>
-                          <div className="row three">
-                            <input type="number" min={0} max={255} value={customEditRgb[0]} onChange={(e) => setCustomEditRgbChannel(0, e.target.value)} onBlur={applyCustomEditHex} aria-label="R" />
-                            <input type="number" min={0} max={255} value={customEditRgb[1]} onChange={(e) => setCustomEditRgbChannel(1, e.target.value)} onBlur={applyCustomEditHex} aria-label="G" />
-                            <input type="number" min={0} max={255} value={customEditRgb[2]} onChange={(e) => setCustomEditRgbChannel(2, e.target.value)} onBlur={applyCustomEditHex} aria-label="B" />
+                          {/* 表單區 */}
+                          <div className="palette-color-popover-body">
+                            <div className="palette-color-popover-hex-row">
+                              <input
+                                type="text"
+                                value={customEditColorHex.toUpperCase()}
+                                onChange={(e) => setCustomEditColorHex(e.target.value)}
+                                onBlur={applyCustomEditHex}
+                                onKeyDown={(e) => { if (e.key === 'Enter') applyCustomEditHex(); }}
+                                placeholder="#RRGGBB"
+                              />
+                              <button type="button" className="primary" onClick={applyCustomEditHex}>
+                                套用
+                              </button>
+                            </div>
+                            <div className="palette-color-popover-rgb">
+                              <div className="palette-color-popover-rgb-channel">
+                                <label>R</label>
+                                <input type="number" min={0} max={255} value={customEditRgb[0]} onChange={(e) => setCustomEditRgbChannel(0, e.target.value)} onBlur={applyCustomEditHex} aria-label="R" />
+                              </div>
+                              <div className="palette-color-popover-rgb-channel">
+                                <label>G</label>
+                                <input type="number" min={0} max={255} value={customEditRgb[1]} onChange={(e) => setCustomEditRgbChannel(1, e.target.value)} onBlur={applyCustomEditHex} aria-label="G" />
+                              </div>
+                              <div className="palette-color-popover-rgb-channel">
+                                <label>B</label>
+                                <input type="number" min={0} max={255} value={customEditRgb[2]} onChange={(e) => setCustomEditRgbChannel(2, e.target.value)} onBlur={applyCustomEditHex} aria-label="B" />
+                              </div>
+                            </div>
                           </div>
                         </div>
                       )}

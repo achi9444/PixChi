@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
@@ -58,6 +59,16 @@ export default function AuthPanel({
   const [showRegPwd, setShowRegPwd] = useState(false);
   const [showRegConfirm, setShowRegConfirm] = useState(false);
 
+  // Escape 鍵關閉
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    if (e.key === 'Escape' && authPanelOpen) onClosePanel();
+  }, [authPanelOpen, onClosePanel]);
+
+  useEffect(() => {
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
+
   function handleRegisterSubmit(e: React.FormEvent) {
     e.preventDefault();
     setRegError('');
@@ -92,7 +103,7 @@ export default function AuthPanel({
           aria-label={`用戶 ${authUser.username}，點擊進入帳號頁面`}
         >
           {avatarImage
-            ? <img src={avatarImage} alt={authUser.username} style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
+            ? <img src={avatarImage} alt={authUser.username} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             : avatarLetter}
         </button>
         <button className="ghost logout-separator" onClick={onLogout}>
@@ -102,30 +113,56 @@ export default function AuthPanel({
     );
   }
 
-  return (
-    <>
-      <button className="ghost" onClick={onTogglePanel} disabled={authBusy}>
-        {authBusy ? '處理中...' : authPanelOpen ? '收合' : '登入 / 註冊'}
-      </button>
-      {authPanelOpen && (
-        <div className="auth-panel">
-          <div className="row two" style={{ marginBottom: 10 }}>
-            <button
-              type="button"
-              className={mode === 'login' ? 'primary' : 'ghost'}
-              onClick={() => switchMode('login')}
-            >
-              登入
-            </button>
-            <button
-              type="button"
-              className={mode === 'register' ? 'primary' : 'ghost'}
-              onClick={() => switchMode('register')}
-            >
-              註冊
-            </button>
+  const modal = authPanelOpen ? createPortal(
+    <div
+      className="auth-modal-backdrop"
+      onClick={(e) => { if (e.target === e.currentTarget) onClosePanel(); }}
+      aria-modal="true"
+      role="dialog"
+      aria-label="登入 / 註冊"
+    >
+      <div className="auth-modal">
+        {/* 標題列 */}
+        <div className="auth-modal-header">
+          <div className="auth-modal-brand">
+            <span className="auth-modal-brand-mark">P</span>
+            <div>
+              <div className="auth-modal-brand-name">PixChi</div>
+              <div className="auth-modal-brand-sub">{mode === 'login' ? 'Log In' : 'Sign Up'}</div>
+            </div>
           </div>
+          <button
+            type="button"
+            className="auth-modal-close"
+            onClick={onClosePanel}
+            aria-label="關閉"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
 
+        {/* 頁籤 */}
+        <div className="auth-modal-tabs">
+          <button
+            type="button"
+            className={`auth-modal-tab${mode === 'login' ? ' active' : ''}`}
+            onClick={() => switchMode('login')}
+          >
+            登入
+          </button>
+          <button
+            type="button"
+            className={`auth-modal-tab${mode === 'register' ? ' active' : ''}`}
+            onClick={() => switchMode('register')}
+          >
+            註冊
+          </button>
+        </div>
+
+        {/* 表單主體 */}
+        <div className="auth-modal-body">
           {mode === 'login' ? (
             <form
               onSubmit={(e) => {
@@ -141,18 +178,18 @@ export default function AuthPanel({
                   onChange={(e) => onUsernameChange(e.target.value)}
                   placeholder="輸入帳號"
                   autoComplete="username"
+                  autoFocus
                 />
               </label>
               <label>
                 密碼
-                <div style={{ position: 'relative' }}>
+                <div className="password-input-wrap">
                   <input
                     type={showLoginPwd ? 'text' : 'password'}
                     value={loginPassword}
                     onChange={(e) => onPasswordChange(e.target.value)}
                     placeholder="輸入密碼"
                     autoComplete="current-password"
-                    style={{ paddingRight: 40 }}
                   />
                   <button
                     type="button"
@@ -165,14 +202,9 @@ export default function AuthPanel({
                 </div>
               </label>
               {loginErrorText ? <p className="status error">{loginErrorText}</p> : null}
-              <div className="row two">
-                <button type="submit" className="primary" disabled={authBusy}>
-                  {authBusy ? '登入中...' : '登入'}
-                </button>
-                <button type="button" className="ghost" onClick={onClosePanel}>
-                  取消
-                </button>
-              </div>
+              <button type="submit" className="primary auth-modal-submit" disabled={authBusy}>
+                {authBusy ? '登入中...' : '登入'}
+              </button>
             </form>
           ) : (
             <form onSubmit={handleRegisterSubmit}>
@@ -184,18 +216,18 @@ export default function AuthPanel({
                   onChange={(e) => setRegUsername(e.target.value)}
                   placeholder="3-20 字元，小寫英數字、底線"
                   autoComplete="username"
+                  autoFocus
                 />
               </label>
               <label>
                 密碼
-                <div style={{ position: 'relative' }}>
+                <div className="password-input-wrap">
                   <input
                     type={showRegPwd ? 'text' : 'password'}
                     value={regPassword}
                     onChange={(e) => setRegPassword(e.target.value)}
                     placeholder="至少 6 個字元"
                     autoComplete="new-password"
-                    style={{ paddingRight: 40 }}
                   />
                   <button
                     type="button"
@@ -209,14 +241,13 @@ export default function AuthPanel({
               </label>
               <label>
                 確認密碼
-                <div style={{ position: 'relative' }}>
+                <div className="password-input-wrap">
                   <input
                     type={showRegConfirm ? 'text' : 'password'}
                     value={regConfirm}
                     onChange={(e) => setRegConfirm(e.target.value)}
                     placeholder="再次輸入密碼"
                     autoComplete="new-password"
-                    style={{ paddingRight: 40 }}
                   />
                   <button
                     type="button"
@@ -231,18 +262,23 @@ export default function AuthPanel({
               {(regError || loginErrorText) ? (
                 <p className="status error">{regError || loginErrorText}</p>
               ) : null}
-              <div className="row two">
-                <button type="submit" className="primary" disabled={authBusy}>
-                  {authBusy ? '處理中...' : '建立帳號'}
-                </button>
-                <button type="button" className="ghost" onClick={onClosePanel}>
-                  取消
-                </button>
-              </div>
+              <button type="submit" className="primary auth-modal-submit" disabled={authBusy}>
+                {authBusy ? '處理中...' : '建立帳號'}
+              </button>
             </form>
           )}
         </div>
-      )}
+      </div>
+    </div>,
+    document.body
+  ) : null;
+
+  return (
+    <>
+      <button className="ghost" onClick={onTogglePanel} disabled={authBusy}>
+        {authBusy ? '...' : 'LogIn'}
+      </button>
+      {modal}
     </>
   );
 }

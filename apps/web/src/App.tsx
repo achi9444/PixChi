@@ -363,6 +363,14 @@ export default function App() {
   const [cropToolEnabled, setCropToolEnabled] = useState(true);
   const [cropHoverMode, setCropHoverMode] = useState<CropDragMode | null>(null);
   const [editTool, setEditTool] = useState<'pan' | 'paint' | 'erase' | 'bucket' | 'picker'>('pan');
+  const selectEditTool = (tool: 'pan' | 'paint' | 'erase' | 'bucket' | 'picker') => {
+    setEditTool(tool);
+    // 切換編輯工具時，若格點裁剪啟用，自動取消
+    if (cropToolEnabled && converted) {
+      setCropToolEnabled(false);
+      setGridCropRect(null);
+    }
+  };
   const [brushSize, setBrushSize] = useState(1);
   const [bucketMode, setBucketMode] = useState<'global' | 'region'>('global');
   const [zoom, setZoom] = useState(1);
@@ -395,12 +403,15 @@ export default function App() {
     setPanelStack(prev => [...prev.filter(p => p !== id), id]);
   }, []);
   const [sidebarCollapseSignal, setSidebarCollapseSignal] = useState(0);
+  const [focusMaskEnabled, setFocusMaskEnabled] = useState(false);
+  const [beadCircleMode, setBeadCircleMode] = useState(false);
   const [focusColorName, setFocusColorName] = useState('');
   const [focusColorSearch, setFocusColorSearch] = useState('');
   const [focusColorMenuOpen, setFocusColorMenuOpen] = useState(false);
   const [focusNeighborEnabled, setFocusNeighborEnabled] = useState(false);
   const [focusNeighborDeltaE, setFocusNeighborDeltaE] = useState(10);
   const [statsSearch, setStatsSearch] = useState('');
+  const [mergeThreshold, setMergeThreshold] = useState(3);
   const [proUnitCost, setProUnitCost] = useState(PUBLIC_PRICING_PRESET.unitCost);
   const [proLossRate, setProLossRate] = useState(PUBLIC_PRICING_PRESET.lossRate);
   const [proHourlyRate, setProHourlyRate] = useState(160);
@@ -577,6 +588,29 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     () => statsRows.find((r) => r.name === focusColorName) ?? null,
     [statsRows, focusColorName]
   );
+
+  // 合併相近色預覽：以顆數最多的色為代表，貪婪分組
+  const mergeGroups = useMemo(() => {
+    if (!mergeThreshold || !statsRows.length) return [];
+    const visited = new Set<string>();
+    const groups: { rep: { name: string; hex: string; count: number }; merged: { name: string; hex: string; count: number }[] }[] = [];
+    for (const rep of statsRows) {
+      if (visited.has(rep.name)) continue;
+      visited.add(rep.name);
+      const repLab = rgbToLab(...hexToRgb(rep.hex));
+      const merged: { name: string; hex: string; count: number }[] = [];
+      for (const other of statsRows) {
+        if (visited.has(other.name)) continue;
+        const d = deltaE2000(repLab, rgbToLab(...hexToRgb(other.hex)));
+        if (d <= mergeThreshold) {
+          visited.add(other.name);
+          merged.push({ name: other.name, hex: other.hex, count: other.count });
+        }
+      }
+      if (merged.length > 0) groups.push({ rep: { name: rep.name, hex: rep.hex, count: rep.count }, merged });
+    }
+    return groups;
+  }, [statsRows, mergeThreshold]);
 
   const focusVisibleNameSet = useMemo(() => {
     if (!focusColorName || !focusNeighborEnabled || !selectedFocusColor) return null;
@@ -1713,14 +1747,26 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       const focusOutlineEnabled = !constructionMode;
       const isDimmed = showConstruction && constructionCurrentCellSet.size > 0
         ? !c.isEmpty && !constructionCurrentCellSet.has(srcIdx)
-        : hasFocus && !c.isEmpty && !focusMatch;
+        : focusMaskEnabled && hasFocus && !c.isEmpty && !focusMatch;
       ctx.fillStyle = c.hex;
-      ctx.fillRect(x, y, cell, cell);
-      if (isDimmed) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.80)';
+      if (beadCircleMode) {
+        ctx.beginPath();
+        ctx.arc(x + cell / 2, y + cell / 2, cell * 0.42, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
         ctx.fillRect(x, y, cell, cell);
       }
-      if (!fastRender) {
+      if (isDimmed) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.80)';
+        if (beadCircleMode) {
+          ctx.beginPath();
+          ctx.arc(x + cell / 2, y + cell / 2, cell * 0.42, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.fillRect(x, y, cell, cell);
+        }
+      }
+      if (!fastRender && !beadCircleMode) {
         ctx.strokeStyle = '#dbe5df';
         ctx.lineWidth = 1;
         ctx.strokeRect(x, y, cell, cell);
@@ -1729,26 +1775,44 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       if (showConstruction) {
         if (constructionShowDoneOverlay && constructionDoneCellSet.has(srcIdx)) {
           ctx.fillStyle = 'rgba(255, 255, 255, 0.60)';
-          ctx.fillRect(x, y, cell, cell);
+          if (beadCircleMode) {
+            ctx.beginPath();
+            ctx.arc(x + cell / 2, y + cell / 2, cell * 0.42, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.fillRect(x, y, cell, cell);
+          }
         }
         if (constructionCurrentCellSet.has(srcIdx)) {
           const dash = Math.max(2, Math.round(cell * 0.18));
+          const lw = Math.max(1.5, Math.min(3, cell * 0.14));
+          const rx = x + 0.5, ry = y + 0.5, rw = Math.max(0, cell - 1), rh = Math.max(0, cell - 1);
           ctx.save();
+          ctx.lineWidth = lw;
           ctx.setLineDash([dash, dash]);
+          ctx.lineDashOffset = 0;
+          ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+          ctx.strokeRect(rx, ry, rw, rh);
+          ctx.lineDashOffset = dash;
           ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-          ctx.lineWidth = Math.max(1.5, Math.min(3, cell * 0.14));
-          ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
+          ctx.strokeRect(rx, ry, rw, rh);
           ctx.restore();
         }
       }
 
       if (focusOutlineEnabled && hasFocus && focusMatch && !c.isEmpty) {
         const dash = Math.max(2, Math.round(cell * 0.18));
+        const lw = Math.max(1.5, Math.min(3, cell * 0.14));
+        const rx = x + 0.5, ry = y + 0.5, rw = Math.max(0, cell - 1), rh = Math.max(0, cell - 1);
         ctx.save();
+        ctx.lineWidth = lw;
         ctx.setLineDash([dash, dash]);
+        ctx.lineDashOffset = 0;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.85)';
+        ctx.strokeRect(rx, ry, rw, rh);
+        ctx.lineDashOffset = dash;
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-        ctx.lineWidth = Math.max(1.5, Math.min(3, cell * 0.14));
-        ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, cell - 1), Math.max(0, cell - 1));
+        ctx.strokeRect(rx, ry, rw, rh);
         ctx.restore();
       }
 
@@ -1802,34 +1866,34 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
 
     if (showRuler) {
       ctx.save();
-      const rulerW = Math.max(0, ox - 2);
-      const rulerH = Math.max(0, oy - 2);
+      const RULER = Math.max(20, Math.min(32, cell * 1.5));  // 固定帶寬，貼近格線
       const gridPxW = viewCols * cell;
       const gridPxH = viewRows * cell;
       const rightX = ox + gridPxW;
       const bottomY = oy + gridPxH;
+      // 尺規背景帶（緊貼格線四邊）
       ctx.fillStyle = '#ffffffd9';
-      ctx.fillRect(ox, Math.max(0, oy - rulerH), gridPxW, rulerH);           // top
-      ctx.fillRect(Math.max(0, ox - rulerW), oy, rulerW, gridPxH);            // left
-      ctx.fillRect(rightX, oy, rulerW, gridPxH);                               // right
-      ctx.fillRect(ox, bottomY, gridPxW, rulerH);                              // bottom
+      ctx.fillRect(ox, oy - RULER, gridPxW, RULER);           // top
+      ctx.fillRect(ox - RULER, oy, RULER, gridPxH);           // left
+      ctx.fillRect(rightX, oy, RULER, gridPxH);               // right
+      ctx.fillRect(ox, bottomY, gridPxW, RULER);              // bottom
+      // 標籤
       ctx.fillStyle = '#465a52';
-      ctx.font = '11px Segoe UI';
+      ctx.font = `${Math.max(9, Math.min(12, Math.floor(RULER * 0.5)))}px Segoe UI`;
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
       for (let gx = 0; gx <= viewCols; gx += guideStep) {
         const x = ox + gx * cell;
         const label = String(viewStartCol + gx);
-        ctx.fillText(label, x, Math.max(10, oy - rulerH / 2));                // top
-        ctx.fillText(label, x, bottomY + rulerH / 2);                          // bottom
+        ctx.fillText(label, x, oy - RULER / 2);               // top
+        ctx.fillText(label, x, bottomY + RULER / 2);          // bottom
       }
       for (let gy = 0; gy <= viewRows; gy += guideStep) {
         const y = oy + gy * cell;
         const label = String(viewStartRow + gy);
-        ctx.textAlign = 'right';
-        ctx.fillText(label, Math.max(18, ox - 4), y);                          // left
-        ctx.textAlign = 'left';
-        ctx.fillText(label, rightX + 4, y);                                    // right
+        ctx.textAlign = 'center';
+        ctx.fillText(label, ox - RULER / 2, y);               // left
+        ctx.fillText(label, rightX + RULER / 2, y);           // right
       }
       ctx.restore();
     }
@@ -1985,7 +2049,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       ctx.fillText(dimLabel, cropPx + cropPw / 2, cropPy + cropPh / 2);
       ctx.restore();
     }
-  }, [converted, imageBitmap, cropRect, cropToolEnabled, cropHoverMode, showCode, focusColorName, focusVisibleNameSet, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery, largeGridMode, selectedLargeTile, constructionMode, constructionTasks.length, constructionShowDoneOverlay, constructionDoneCellSet, constructionCurrentCellSet, editTool, brushSize, selectedEditColor, gridCropRect]);
+  }, [converted, imageBitmap, cropRect, cropToolEnabled, cropHoverMode, showCode, focusColorName, focusVisibleNameSet, focusMaskEnabled, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery, largeGridMode, selectedLargeTile, constructionMode, constructionTasks.length, constructionShowDoneOverlay, constructionDoneCellSet, constructionCurrentCellSet, editTool, brushSize, selectedEditColor, gridCropRect, beadCircleMode]);
 
   useEffect(() => {
     drawGrid();
@@ -2263,25 +2327,40 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setSidebarCollapseSignal((s) => s + 1);
   };
 
-  const resizeBlankCanvas = (newCols: number, newRows: number) => {
-    if (!converted || converted.processInfo !== 'blank') return;
+  const resizeCanvas = (newCols: number, newRows: number) => {
+    if (!converted) return;
     const clampedCols = clampInt(newCols, 1, MAX_GRID_SIZE);
     const clampedRows = clampInt(newRows, 1, MAX_GRID_SIZE);
     if (clampedCols * clampedRows > GRID_SOFT_LIMIT) return;
     const oldCells = converted.cells;
     const oldCols = converted.cols;
+    const oldRows = converted.rows;
+    const sizeLabel = converted.processInfo === 'blank' ? '空白畫布' : '已調整尺寸';
+    const before: BulkSnapshot = {
+      converted,
+      cols: oldCols,
+      rows: oldRows,
+      gridMeta: `${oldCols} x ${oldRows}（${sizeLabel}）`,
+    };
+    // Nearest-neighbor scaling: sample from old grid proportionally
     const newCells: Cell[] = [];
-    for (let y = 0; y < clampedRows; y++)
-      for (let x = 0; x < clampedCols; x++)
-        newCells.push(
-          x < oldCols && y < converted.rows
-            ? { ...oldCells[y * oldCols + x], x, y }
-            : { x, y, rgb: [255,255,255] as [number,number,number], colorName: '', hex: '#FFFFFF', isEmpty: true }
-        );
-    setConverted({ ...converted, cols: clampedCols, rows: clampedRows, cells: newCells });
+    for (let y = 0; y < clampedRows; y++) {
+      for (let x = 0; x < clampedCols; x++) {
+        const srcX = Math.min(Math.round(x * oldCols / clampedCols), oldCols - 1);
+        const srcY = Math.min(Math.round(y * oldRows / clampedRows), oldRows - 1);
+        newCells.push({ ...oldCells[srcY * oldCols + srcX], x, y });
+      }
+    }
+    const newConverted = { ...converted, cols: clampedCols, rows: clampedRows, cells: newCells };
+    const newGridMeta = `${clampedCols} x ${clampedRows}（${sizeLabel}）`;
+    const after: BulkSnapshot = { converted: newConverted, cols: clampedCols, rows: clampedRows, gridMeta: newGridMeta };
+    setConverted(newConverted);
     setCols(clampedCols);
     setRows(clampedRows);
-    setGridMeta(`${clampedCols} x ${clampedRows}（空白畫布）`);
+    setGridMeta(newGridMeta);
+    setUndoStack((prev) => [...prev, { changes: [], label: `調整尺寸：${clampedCols} x ${clampedRows}`, bulkChange: { before, after } }]);
+    setRedoStack([]);
+    addHistory(`調整尺寸：${clampedCols} x ${clampedRows}`);
   };
 
   const applyImageCrop = async () => {
@@ -2992,6 +3071,11 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     }
     const scope = getScopeBounds();
 
+    // 若開啟相近色，替換範圍擴大至整個 focusVisibleNameSet
+    const targetSet = focusNeighborEnabled && focusVisibleNameSet
+      ? focusVisibleNameSet
+      : new Set([focusColorName]);
+
     const changes: CellChange[] = [];
     const nextCells = converted.cells.map((cell, idx) => {
       if (scope) {
@@ -2999,7 +3083,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         const y = Math.floor(idx / converted.cols);
         if (x < scope.startCol || x > scope.endCol || y < scope.startRow || y > scope.endRow) return cell;
       }
-      if (cell.isEmpty || cell.colorName !== focusColorName) return cell;
+      if (cell.isEmpty || !targetSet.has(cell.colorName)) return cell;
       const before = { ...cell };
       const after = isPaintToEmpty
         ? { ...cell, colorName: '', hex: '#FFFFFF', isEmpty: true }
@@ -3013,15 +3097,68 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       return;
     }
 
-    pushUndo(changes, `焦點色全替換（${changes.length} 格）`);
-    setConverted({ ...converted, cells: nextCells });
+    const colorCount = targetSet.size;
+    const colorCountText = colorCount > 1 ? `及相近色（${colorCount} 種）` : '';
     const scopeText = largeGridMode && largeOperationScope === 'tile' && selectedLargeTile ? '（當前分塊）' : '（全圖）';
+    pushUndo(changes, colorCount > 1 ? `焦點色及相近色全替換（${colorCount} 種，${changes.length} 格）` : `焦點色全替換（${changes.length} 格）`);
+    setConverted({ ...converted, cells: nextCells });
     setStatusText(
       isPaintToEmpty
-        ? `已將焦點色 ${focusColorName} 全部清空${scopeText}。`
-        : `已將焦點色 ${focusColorName} 全部替換為 ${chosen!.name}${scopeText}。`
+        ? `已將焦點色${colorCountText}全部清空，共 ${changes.length} 格${scopeText}。`
+        : `已將焦點色${colorCountText}全部替換為 ${chosen!.name}，共 ${changes.length} 格${scopeText}。`
     );
   };
+
+  const replaceColorDirect = useCallback((fromName: string, toName: string) => {
+    if (!converted) return;
+    const toColor = activeGroup?.colors.find((c) => c.name === toName);
+    if (!toColor) return;
+    const changes: CellChange[] = [];
+    const nextCells = converted.cells.map((cell, idx) => {
+      if (cell.isEmpty || cell.colorName !== fromName) return cell;
+      const after = { ...cell, colorName: toColor.name, hex: toColor.hex, isEmpty: false };
+      changes.push({ idx, before: { ...cell }, after });
+      return after;
+    });
+    if (!changes.length) { setStatusText('找不到可替換的色格。'); return; }
+    pushUndo(changes, `直接替換：${fromName} → ${toName}（${changes.length} 格）`);
+    setConverted({ ...converted, cells: nextCells });
+    setStatusText(`已將 ${fromName} 全部替換為 ${toName}，共 ${changes.length} 格。`);
+  }, [converted, activeGroup, pushUndo]);
+
+  const findSimilarColorsFor = useCallback((colorName: string, maxCount = 5): { name: string; hex: string; deltaE: number }[] => {
+    const target = statsRows.find((r) => r.name === colorName);
+    if (!target || !activeGroup) return [];
+    const targetLab = rgbToLab(...hexToRgb(target.hex));
+    return activeGroup.colors
+      .filter((c) => c.name !== colorName)
+      .map((c) => ({ name: c.name, hex: c.hex, deltaE: deltaE2000(targetLab, rgbToLab(...hexToRgb(c.hex))) }))
+      .sort((a, b) => a.deltaE - b.deltaE)
+      .slice(0, maxCount);
+  }, [statsRows, activeGroup]);
+
+  const mergeSimilarColors = useCallback(() => {
+    if (!converted || !mergeGroups.length) return;
+    const replaceMap = new Map<string, { name: string; hex: string }>();
+    for (const g of mergeGroups) {
+      for (const m of g.merged) replaceMap.set(m.name, { name: g.rep.name, hex: g.rep.hex });
+    }
+    if (!replaceMap.size) return;
+    const changes: CellChange[] = [];
+    const nextCells = converted.cells.map((cell, idx) => {
+      if (cell.isEmpty) return cell;
+      const rep = replaceMap.get(cell.colorName);
+      if (!rep) return cell;
+      const after = { ...cell, colorName: rep.name, hex: rep.hex };
+      changes.push({ idx, before: { ...cell }, after });
+      return after;
+    });
+    if (!changes.length) { setStatusText('無需合併。'); return; }
+    const mergeCount = replaceMap.size;
+    pushUndo(changes, `合併相近色（閾值 ${mergeThreshold}，合併 ${mergeCount} 色，${changes.length} 格）`);
+    setConverted({ ...converted, cells: nextCells });
+    setStatusText(`已合併 ${mergeCount} 種相近色，影響 ${changes.length} 格。`);
+  }, [converted, mergeGroups, mergeThreshold, pushUndo]);
 
   const addOneCellOutline = () => {
     if (!converted || !activeGroup || !editColorName) return;
@@ -3318,12 +3455,12 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       }
       if (matchesShortcutSet(ev, effectiveShortcutConfig.toolPan)) {
         ev.preventDefault();
-        setEditTool('pan');
+        selectEditTool('pan');
       }
-      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolPaint)) setEditTool('paint');
-      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolErase)) setEditTool('erase');
-      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolBucket)) setEditTool('bucket');
-      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolPicker)) setEditTool('picker');
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolPaint)) selectEditTool('paint');
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolErase)) selectEditTool('erase');
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolBucket)) selectEditTool('bucket');
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toolPicker)) selectEditTool('picker');
       if (matchesShortcutSet(ev, effectiveShortcutConfig.toggleCode)) setShowCode((v) => !v);
       if (matchesShortcutSet(ev, effectiveShortcutConfig.brushDown)) setBrushSize((v) => Math.max(1, v - 1));
       if (matchesShortcutSet(ev, effectiveShortcutConfig.brushUp)) setBrushSize((v) => Math.min(100, v + 1));
@@ -3342,6 +3479,24 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       if (matchesShortcutSet(ev, effectiveShortcutConfig.toggleCanvasFullscreen)) {
         ev.preventDefault();
         setIsCanvasFullscreen((v) => !v);
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toggleCropTool)) {
+        ev.preventDefault();
+        setCropToolEnabled((v) => !v);
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toggleColorPanel)) {
+        ev.preventDefault();
+        setColorPanelVisible((v) => !v);
+        if (!colorPanelVisible) bringPanelToFront('color');
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.toggleConstructionPanel)) {
+        ev.preventDefault();
+        setConstructionPanelVisible((v) => !v);
+        if (!constructionPanelVisible) bringPanelToFront('construction');
+      }
+      if (converted && matchesShortcutSet(ev, effectiveShortcutConfig.mergeSimilarColors)) {
+        ev.preventDefault();
+        mergeSimilarColors();
       }
       if (proMode && largeGridMode && pdfPagination && pdfPagination.totalTiles > 1) {
         if (matchesShortcutSet(ev, effectiveShortcutConfig.tilePrev)) {
@@ -3364,7 +3519,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [effectiveShortcutConfig, isCanvasFullscreen, largeGridMode, pdfPagination, proMode, redo, undo]);
+  }, [effectiveShortcutConfig, isCanvasFullscreen, largeGridMode, pdfPagination, proMode, redo, undo, colorPanelVisible, constructionPanelVisible, converted, mergeSimilarColors, bringPanelToFront]);
 
   const getExportPreflight = useCallback(
     (kind: 'csv' | 'pdf') => {
@@ -4164,7 +4319,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onRollbackToStep={rollbackToStep}
           historyItems={historyItems}
           editTool={editTool}
-          onEditToolChange={setEditTool}
+          onEditToolChange={selectEditTool}
           editColorHex={selectedEditColor?.hex ?? null}
           editColorName={selectedEditColor?.name ?? ''}
           onColorPanelToggle={() => { setColorPanelVisible((v) => !v); bringPanelToFront('color'); }}
@@ -4192,8 +4347,14 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onApplyGridCrop={applyGridCrop}
           onApplyCrop={() => void applyImageCrop()}
           collapseSignal={sidebarCollapseSignal}
+          isCanvasFullscreen={isCanvasFullscreen}
           constructionPanelVisible={constructionPanelVisible}
           onConstructionPanelToggle={() => { setConstructionPanelVisible((v) => !v); bringPanelToFront('construction'); }}
+          colorPanelVisible={colorPanelVisible}
+          mergeThreshold={mergeThreshold}
+          onMergeThresholdChange={setMergeThreshold}
+          mergeGroups={mergeGroups}
+          onMergeSimilarColors={mergeSimilarColors}
         />
 
         <CanvasPanel
@@ -4201,27 +4362,25 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           cols={cols}
           rows={rows}
           onColsChange={(v) => {
-            setCols(v);
             if (!converted) return;
+            // 等比計算新 rows（以原始比例縮放）
+            const newRows = Math.max(1, Math.round(converted.rows * v / converted.cols));
+            setCols(v);
+            setRows(newRows);
             if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
             resizeTimerRef.current = window.setTimeout(() => {
-              if (converted.processInfo === 'blank') {
-                resizeBlankCanvas(v, rows);
-              } else if (imageBitmap) {
-                void runConvert({ overrideCols: v });
-              }
+              resizeCanvas(v, newRows);
             }, 400);
           }}
           onRowsChange={(v) => {
-            setRows(v);
             if (!converted) return;
+            // 等比計算新 cols（以原始比例縮放）
+            const newCols = Math.max(1, Math.round(converted.cols * v / converted.rows));
+            setRows(v);
+            setCols(newCols);
             if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
             resizeTimerRef.current = window.setTimeout(() => {
-              if (converted.processInfo === 'blank') {
-                resizeBlankCanvas(cols, v);
-              } else if (imageBitmap) {
-                void runConvert({ overrideRows: v });
-              }
+              resizeCanvas(newCols, v);
             }, 400);
           }}
           maxGridSize={MAX_GRID_SIZE}
@@ -4235,7 +4394,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           hasConverted={!!converted}
           hasImageBitmap={!!imageBitmap}
           editTool={editTool}
-          onEditToolChange={setEditTool}
+          onEditToolChange={selectEditTool}
           onUndo={undo}
           onRedo={redo}
           largeOperationScope={largeOperationScope}
@@ -4264,6 +4423,16 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           largeViewTilePage={largeViewTilePage}
           proMode={proMode}
           projectName={projectName}
+          showCode={showCode}
+          onShowCodeChange={setShowCode}
+          showRuler={showRuler}
+          onShowRulerChange={setShowRuler}
+          showGuide={showGuide}
+          onShowGuideChange={setShowGuide}
+          guideEvery={guideEvery}
+          onGuideEveryChange={setGuideEvery}
+          beadCircleMode={beadCircleMode}
+          onBeadCircleModeChange={setBeadCircleMode}
           onCanvasClick={onCanvasClick}
           onCanvasMouseDown={onCanvasMouseDown}
           onCanvasMouseMove={onCanvasMouseMove}
@@ -4296,6 +4465,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onProWorkHoursChange={setProWorkHours}
           onProFixedCostChange={setProFixedCost}
           onProMarginChange={setProMargin}
+          onFindSimilarColors={findSimilarColorsFor}
+          onReplaceColorDirect={replaceColorDirect}
         />
       </main>
       )}
@@ -4312,6 +4483,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         constructionMode={constructionMode}
         focusNeighborEnabled={focusNeighborEnabled}
         focusNeighborDeltaE={focusNeighborDeltaE}
+        focusMaskEnabled={focusMaskEnabled}
+        onFocusMaskEnabledChange={setFocusMaskEnabled}
         onFocusColorNameChange={setFocusColorName}
         onFocusColorSearchChange={setFocusColorSearch}
         onFocusColorMenuOpenChange={setFocusColorMenuOpen}
@@ -4338,14 +4511,6 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         zIndex={500 + panelStack.indexOf('construction')}
         onBringToFront={() => bringPanelToFront('construction')}
         proMode={proMode}
-        showCode={showCode}
-        onShowCodeChange={setShowCode}
-        showRuler={showRuler}
-        onShowRulerChange={setShowRuler}
-        showGuide={showGuide}
-        onShowGuideChange={setShowGuide}
-        guideEvery={guideEvery}
-        onGuideEveryChange={setGuideEvery}
         constructionMode={constructionMode}
         onConstructionModeChange={setConstructionMode}
         constructionStrategy={constructionStrategy}

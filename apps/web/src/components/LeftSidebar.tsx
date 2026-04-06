@@ -203,8 +203,14 @@ export type LeftSidebarProps = {
   onApplyGridCrop: () => void;
   onApplyCrop: () => void;
   collapseSignal?: number;
+  isCanvasFullscreen?: boolean;
   constructionPanelVisible: boolean;
   onConstructionPanelToggle: () => void;
+  colorPanelVisible: boolean;
+  mergeThreshold: number;
+  onMergeThresholdChange: (v: number) => void;
+  mergeGroups: { rep: { name: string; hex: string; count: number }; merged: { name: string; hex: string; count: number }[] }[];
+  onMergeSimilarColors: () => void;
 };
 
 // ── Icons ─────────────────────────────────────────────────────
@@ -231,6 +237,17 @@ function IconConstruction() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+    </svg>
+  );
+}
+
+function IconMerge() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <g transform="rotate(40, 12, 12)">
+        <circle cx="8" cy="12" r="5.5"/>
+        <circle cx="16" cy="12" r="5.5"/>
+      </g>
     </svg>
   );
 }
@@ -345,6 +362,13 @@ function FileSection({
   const [blankCols, setBlankCols] = useState(29);
   const [blankRows, setBlankRows] = useState(29);
   const [blankName, setBlankName] = useState('');
+
+  useEffect(() => {
+    if (!blankModalOpen) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setBlankModalOpen(false); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [blankModalOpen]);
 
   function handleFileChange(file: File | null) {
     setFileName(file?.name ?? null);
@@ -580,10 +604,13 @@ export default function LeftSidebar(props: LeftSidebarProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [statsMobileOpen, setStatsMobileOpen] = useState(false);
   const [toolParamOpen, setToolParamOpen] = useState<'paint' | 'erase' | 'bucket' | null>(null);
+  const [mergePopoverOpen, setMergePopoverOpen] = useState(false);
   const sc = props.shortcutConfig;
   const paintBtnRef = useRef<HTMLButtonElement | null>(null);
   const eraseBtnRef = useRef<HTMLButtonElement | null>(null);
   const bucketBtnRef = useRef<HTMLButtonElement | null>(null);
+  const mergeBtnRef = useRef<HTMLButtonElement | null>(null);
+  const mergePopoverRef = useRef<HTMLDivElement | null>(null);
   const toolParamPortalRef = useRef<HTMLDivElement | null>(null);
 
   // 切換到沒有參數的工具時自動關閉 popover
@@ -593,10 +620,10 @@ export default function LeftSidebar(props: LeftSidebarProps) {
     }
   }, [props.editTool]);
 
-  // 點擊 popover 與觸發按鈕外部時關閉
+  // 點擊 popover 與觸發按鈕外部時關閉 + ESC
   useEffect(() => {
     if (!toolParamOpen) return;
-    const handler = (e: MouseEvent) => {
+    const onMouse = (e: MouseEvent) => {
       const target = e.target as Node;
       if (paintBtnRef.current?.contains(target)) return;
       if (eraseBtnRef.current?.contains(target)) return;
@@ -604,9 +631,32 @@ export default function LeftSidebar(props: LeftSidebarProps) {
       if (toolParamPortalRef.current?.contains(target)) return;
       setToolParamOpen(null);
     };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setToolParamOpen(null); };
+    document.addEventListener('mousedown', onMouse);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onMouse);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [toolParamOpen]);
+
+  // 合併 popover 點外關閉 + ESC
+  useEffect(() => {
+    if (!mergePopoverOpen) return;
+    const onMouse = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (mergeBtnRef.current?.contains(target)) return;
+      if (mergePopoverRef.current?.contains(target)) return;
+      setMergePopoverOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMergePopoverOpen(false); };
+    document.addEventListener('mousedown', onMouse);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onMouse);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [mergePopoverOpen]);
 
   // 計算 popover 位置（固定在按鈕右側）
   const getPopoverStyle = (tool: 'paint' | 'erase' | 'bucket'): React.CSSProperties => {
@@ -700,7 +750,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
             <button
               className={`sidebar-icon-btn${props.cropToolEnabled ? ' active' : ''}`}
               onClick={() => props.onCropToolEnabledChange(!props.cropToolEnabled)}
-              title={props.cropToolEnabled ? '關閉裁切工具' : '裁切工具 (Enter 套用 / Esc 取消)'}
+              title={`裁切工具 (${fmtKey(sc.toggleCropTool)}，Enter 套用 / Esc 取消)`}
               aria-label="裁切工具"
               type="button"
             >
@@ -747,14 +797,26 @@ export default function LeftSidebar(props: LeftSidebarProps) {
                 >
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m19 11-8-8-8.5 8.5a5.5 5.5 0 0 0 7.78 7.78L19 11Z"/><path d="m5 2 5 5"/><path d="M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 1.7-2.4 2-4 .3 1.6 2 2.4 2 4Z"/></svg>
                 </button>
-                <IconButton icon={<IconConstruction />} label="施工" active={props.constructionPanelVisible} onClick={props.onConstructionPanelToggle} tooltip="施工面板與顯示設定" />
+                {/* 合併相近色 */}
+                <button
+                  ref={mergeBtnRef}
+                  className={`sidebar-icon-btn${mergePopoverOpen ? ' active' : ''}`}
+                  onClick={() => setMergePopoverOpen((v) => !v)}
+                  title={`合併相近色 (${fmtKey(sc.mergeSimilarColors)})`}
+                  aria-label="合併相近色"
+                  type="button"
+                  disabled={!props.converted}
+                >
+                  <IconMerge />
+                </button>
+                <IconButton icon={<IconConstruction />} label="施工" active={props.constructionPanelVisible} onClick={props.onConstructionPanelToggle} tooltip={`施工面板 (${fmtKey(sc.toggleConstructionPanel)})`} />
                 {props.editColorHex && (
                   <span
                     className="color-indicator clickable"
                     role="button"
                     tabIndex={0}
-                    title={`${props.editColorName || '目前選色'}（點擊開啟修色面板）`}
-                    style={{ background: props.editColorHex }}
+                    title={`${props.editColorName || '目前選色'}（點擊開啟修色面板 ${fmtKey(sc.toggleColorPanel)}）`}
+                    style={{ background: props.editColorHex, outline: props.colorPanelVisible ? '2px solid var(--accent)' : undefined }}
                     onClick={props.onColorPanelToggle}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); props.onColorPanelToggle(); } }}
                   />
@@ -787,7 +849,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
       </div>
 
       {/* 懸浮面板 */}
-      <div className="sidebar-panel">
+      <div className={`sidebar-panel${props.isCanvasFullscreen && isOpen ? ' sidebar-panel--fullscreen-overlay' : ''}`}>
         {activeTab === 'file' && (
           <FileSection
             onImageSelected={props.onImageSelected}
@@ -885,6 +947,76 @@ export default function LeftSidebar(props: LeftSidebarProps) {
               連通區域
             </button>
           </>
+        )}
+      </div>,
+      document.body
+    )}
+    {/* ── Merge popover */}
+    {mergePopoverOpen && mergeBtnRef.current && createPortal(
+      <div
+        ref={mergePopoverRef}
+        className="tool-param-popover"
+        style={(() => {
+          const rect = mergeBtnRef.current!.getBoundingClientRect();
+          return { position: 'fixed', top: rect.top + rect.height / 2, left: rect.right + 8, transform: 'translateY(-50%)', minWidth: 200 };
+        })()}
+      >
+        {/* 閾值輸入列 */}
+        <div className="merge-popover-threshold-row">
+          <span className="tool-param-label" style={{ margin: 0 }}>相似度閾值（ΔE）</span>
+          <input
+            type="number"
+            className="tool-param-input merge-popover-threshold-input"
+            min={0.5}
+            max={20}
+            step={0.5}
+            value={props.mergeThreshold}
+            onChange={(e) => props.onMergeThresholdChange(Math.max(0.5, Math.min(20, Number(e.target.value) || 0.5)))}
+            aria-label="相似度閾值"
+          />
+        </div>
+
+        {props.mergeGroups.length > 0 ? (
+          <>
+            {/* 分隔線 + 統計 */}
+            <div className="merge-popover-divider" />
+            <span className="merge-popover-count">
+              將合併 <strong>{props.mergeGroups.reduce((s, g) => s + g.merged.length, 0)}</strong> 個相近色
+            </span>
+
+            {/* 合併預覽清單 */}
+            <div className="merge-popover-list">
+              {props.mergeGroups.slice(0, 10).map((g) => (
+                <div key={g.rep.name} className="merge-popover-row">
+                  <span className="color-pill" style={{ color: g.rep.hex }} />
+                  <span className="merge-popover-rep">{g.rep.name}</span>
+                  <span className="merge-popover-arrow">←</span>
+                  <span className="merge-popover-sources">
+                    {g.merged.map((m) => (
+                      <span key={m.name} className="merge-popover-source">
+                        <span className="color-pill tiny" style={{ color: m.hex }} />
+                        {m.name}
+                      </span>
+                    ))}
+                  </span>
+                </div>
+              ))}
+              {props.mergeGroups.length > 10 && (
+                <span className="merge-popover-more">…還有 {props.mergeGroups.length - 10} 組</span>
+              )}
+            </div>
+
+            <button
+              className="primary"
+              style={{ width: '100%', marginTop: 2, height: 36, fontSize: 13 }}
+              type="button"
+              onClick={() => { props.onMergeSimilarColors(); setMergePopoverOpen(false); }}
+            >
+              執行合併
+            </button>
+          </>
+        ) : (
+          <div className="merge-popover-empty">目前閾值下無可合併色</div>
         )}
       </div>,
       document.body

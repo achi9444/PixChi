@@ -14,7 +14,11 @@ export const SHORTCUTS = {
   zoomReset: ['0'],
   toggleCanvasFullscreen: ['f'],
   tilePrev: ['alt+arrowleft'],
-  tileNext: ['alt+arrowright']
+  tileNext: ['alt+arrowright'],
+  toggleCropTool: ['k'],
+  toggleColorPanel: ['v'],
+  toggleConstructionPanel: ['j'],
+  mergeSimilarColors: ['m'],
 } as const;
 
 export const SHORTCUT_LABELS: Record<keyof typeof SHORTCUTS, string> = {
@@ -33,5 +37,9 @@ export const SHORTCUT_LABELS: Record<keyof typeof SHORTCUTS, string> = {
   zoomReset: '重置視圖',
   toggleCanvasFullscreen: '畫布全螢幕',
   tilePrev: '上一分塊',
-  tileNext: '下一分塊'
+  tileNext: '下一分塊',
+  toggleCropTool: '裁切工具',
+  toggleColorPanel: '修色面板',
+  toggleConstructionPanel: '施工面板',
+  mergeSimilarColors: '合併相近色',
 };

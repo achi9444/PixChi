@@ -8,6 +8,8 @@ type StatsRow = {
   lineCost: number;
 };
 
+type SimilarColor = { name: string; hex: string; deltaE: number };
+
 type Props = {
   proMode: boolean;
   totalBeads: number;
@@ -33,6 +35,8 @@ type Props = {
   onProWorkHoursChange: (v: number) => void;
   onProFixedCostChange: (v: number) => void;
   onProMarginChange: (v: number) => void;
+  onFindSimilarColors: (colorName: string) => SimilarColor[];
+  onReplaceColorDirect: (fromName: string, toName: string) => void;
 };
 
 export default function StatsPanel({
@@ -60,8 +64,11 @@ export default function StatsPanel({
   onProWorkHoursChange,
   onProFixedCostChange,
   onProMarginChange,
+  onFindSimilarColors,
+  onReplaceColorDirect,
 }: Props) {
   const [costOpen, setCostOpen] = useState(false);
+  const [similarPopover, setSimilarPopover] = useState<{ name: string; candidates: SimilarColor[] } | null>(null);
   return (
     <section className="panel stats">
       <h2>完整色號統計</h2>
@@ -191,19 +198,65 @@ export default function StatsPanel({
               <th>顆數</th>
               <th>佔比</th>
               {proMode && <th>成本</th>}
+              <th></th>
             </tr>
           </thead>
           <tbody>
             {filteredStatsRows.map((r) => (
-              <tr key={r.name}>
-                <td>
-                  <span className="color-pill" style={{ color: r.hex }} />
-                  {r.name}
-                </td>
-                <td>{r.count}</td>
-                <td>{r.ratio.toFixed(2)}%</td>
-                {proMode && <td>{r.lineCost.toFixed(2)}</td>}
-              </tr>
+              <>
+                <tr key={r.name}>
+                  <td>
+                    <span className="color-pill" style={{ color: r.hex }} />
+                    {r.name}
+                  </td>
+                  <td>{r.count}</td>
+                  <td>{r.ratio.toFixed(2)}%</td>
+                  {proMode && <td>{r.lineCost.toFixed(2)}</td>}
+                  <td>
+                    <button
+                      type="button"
+                      className={`ghost stats-similar-btn${similarPopover?.name === r.name ? ' active' : ''}`}
+                      title="找相近替換色"
+                      onClick={() => {
+                        if (similarPopover?.name === r.name) {
+                          setSimilarPopover(null);
+                        } else {
+                          setSimilarPopover({ name: r.name, candidates: onFindSimilarColors(r.name) });
+                        }
+                      }}
+                    >
+                      ≈
+                    </button>
+                  </td>
+                </tr>
+                {similarPopover?.name === r.name && (
+                  <tr key={`${r.name}-similar`} className="stats-similar-row">
+                    <td colSpan={proMode ? 5 : 4} style={{ padding: 0 }}>
+                      <div className="stats-similar-list">
+                        {similarPopover.candidates.length === 0 && (
+                          <span className="hint">找不到相近色</span>
+                        )}
+                        {similarPopover.candidates.map((c) => (
+                          <div key={c.name} className="stats-similar-item">
+                            <span className="color-pill" style={{ color: c.hex }} />
+                            <span className="stats-similar-name">{c.name}</span>
+                            <button
+                              type="button"
+                              className="ghost stats-similar-replace-btn"
+                              onClick={() => {
+                                onReplaceColorDirect(r.name, c.name);
+                                setSimilarPopover(null);
+                              }}
+                            >
+                              替換
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </>
             ))}
           </tbody>
         </table>

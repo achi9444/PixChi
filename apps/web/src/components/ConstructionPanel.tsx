@@ -28,14 +28,6 @@ function formatConstructionRuleLabel(rule: Exclude<ConstructionOrderRule, 'manua
 
 type ConstructionPanelProps = {
   proMode: boolean;
-  showCode: boolean;
-  onShowCodeChange: (v: boolean) => void;
-  showRuler: boolean;
-  onShowRulerChange: (v: boolean) => void;
-  showGuide: boolean;
-  onShowGuideChange: (v: boolean) => void;
-  guideEvery: number;
-  onGuideEveryChange: (v: number) => void;
   constructionMode: boolean;
   onConstructionModeChange: (v: boolean) => void;
   constructionStrategy: 'block' | 'color';
@@ -69,10 +61,6 @@ type ConstructionPanelProps = {
 
 export default function ConstructionPanel({
   proMode,
-  showCode, onShowCodeChange,
-  showRuler, onShowRulerChange,
-  showGuide, onShowGuideChange,
-  guideEvery, onGuideEveryChange,
   constructionMode,
   onConstructionModeChange,
   constructionStrategy,
@@ -105,26 +93,6 @@ export default function ConstructionPanel({
 }: ConstructionPanelProps) {
   return (
     <div className="construction-box">
-      {/* 顯示設定 */}
-      <div className="construction-section" style={{ borderTop: 'none', marginTop: 0 }}>
-        <div className="display-toggle-row">
-          <label className="display-toggle-item">
-            色號 <input type="checkbox" checked={showCode} onChange={(e) => onShowCodeChange(e.target.checked)} />
-          </label>
-          <label className="display-toggle-item">
-            尺規 <input type="checkbox" checked={showRuler} onChange={(e) => onShowRulerChange(e.target.checked)} />
-          </label>
-          <label className="display-toggle-item">
-            參考線 <input type="checkbox" checked={showGuide} onChange={(e) => onShowGuideChange(e.target.checked)} />
-          </label>
-        </div>
-        {proMode && showGuide && (
-          <label style={{ marginTop: 6 }}>
-            參考線間距（每幾格）
-            <input type="number" min={1} max={256} value={guideEvery} onChange={(e) => onGuideEveryChange(Math.max(1, Math.floor(Number(e.target.value) || 1)))} />
-          </label>
-        )}
-      </div>
       <div className="draft-box-head">
         <strong>拼豆順序模式</strong>
         <span>完成：{constructionCompletionText}</span>

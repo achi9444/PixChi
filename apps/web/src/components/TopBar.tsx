@@ -58,10 +58,7 @@ export default function TopBar({
         aria-label="回到首頁"
       >
         <div className="topbar-logo-mark" aria-hidden="true">P</div>
-        <div>
-          <h1>PixChi</h1>
-          <p className="subtitle" style={{ marginTop: 0 }}>拼豆圖紙生成</p>
-        </div>
+        <h1 className="topbar-brand-name">PixChi</h1>
       </div>
 
       {/* ── Nav tabs ── */}

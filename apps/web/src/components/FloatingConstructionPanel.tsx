@@ -8,14 +8,6 @@ type FloatingConstructionPanelProps = {
   zIndex?: number;
   onBringToFront?: () => void;
   proMode: boolean;
-  showCode: boolean;
-  onShowCodeChange: (v: boolean) => void;
-  showRuler: boolean;
-  onShowRulerChange: (v: boolean) => void;
-  showGuide: boolean;
-  onShowGuideChange: (v: boolean) => void;
-  guideEvery: number;
-  onGuideEveryChange: (v: number) => void;
   constructionMode: boolean;
   onConstructionModeChange: (v: boolean) => void;
   constructionStrategy: 'block' | 'color';
@@ -72,6 +64,14 @@ export default function FloatingConstructionPanel({
     setSize(DEFAULT_SIZE);
     setMinimized(false);
   }, [onClose]);
+
+  // ESC 關閉
+  useEffect(() => {
+    if (!visible) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [visible, handleClose]);
 
   const onResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();

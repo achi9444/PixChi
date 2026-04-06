@@ -380,7 +380,7 @@ function ProfileEditor({ apiClient, onSaved }: { apiClient: ApiClient; onSaved?:
           />
         </label>
 
-        <fieldset style={{ border: '1px solid var(--line)', borderRadius: 8, padding: '12px 16px', marginTop: 12 }}>
+        <fieldset style={{ border: '2px solid var(--ink)', padding: '12px 16px', marginTop: 12 }}>
           <legend style={{ padding: '0 6px', color: 'var(--muted)', fontSize: 13 }}>外部聯絡連結</legend>
           {links.length === 0 && (
             <p className="hint" style={{ fontSize: 13, margin: '4px 0 8px' }}>尚未新增任何連結</p>
@@ -445,9 +445,9 @@ function ProfileEditor({ apiClient, onSaved }: { apiClient: ApiClient; onSaved?:
           {/* 頭像 + 名稱 */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
             {avatarImage ? (
-              <img src={avatarImage} alt="" style={{ width: 48, height: 48, borderRadius: '50%', objectFit: 'cover', border: '2px solid var(--primary)' }} />
+              <img src={avatarImage} alt="" style={{ width: 48, height: 48, objectFit: 'cover', border: '2px solid var(--primary)' }} />
             ) : (
-              <div style={{ width: 48, height: 48, borderRadius: '50%', background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 20, fontWeight: 700, flexShrink: 0 }}>
+              <div style={{ width: 48, height: 48, background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 20, fontWeight: 700, flexShrink: 0 }}>
                 ?
               </div>
             )}
@@ -635,8 +635,17 @@ function DesignForm({
 
   // 預覽圖（從草稿渲染）
   const [cleanDataUrl, setCleanDataUrl] = useState('');
+  // originalPreviewUrl：浮水印的原始基底（不含本次編輯的浮水印）
+  const [originalPreviewUrl] = useState(editingDesign?.previewImage ?? '');
   const [previewUrl, setPreviewUrl] = useState(editingDesign?.previewImage ?? '');
   const [watermarkText, setWatermarkText] = useState('');
+
+  // ESC 關閉
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onCancel]);
 
   // 草稿選取器
   const [draftPickerOpen, setDraftPickerOpen] = useState(false);
@@ -660,7 +669,8 @@ function DesignForm({
 
   function handleWatermarkChange(text: string) {
     setWatermarkText(text);
-    applyWatermark(text, cleanDataUrl);
+    // 優先用新草稿的乾淨圖；若沒有則用原始 previewImage 作基底
+    applyWatermark(text, cleanDataUrl || originalPreviewUrl);
   }
 
   async function openDraftPicker() {
@@ -800,7 +810,7 @@ function DesignForm({
                 onChange={(e) => handleWatermarkChange(e.target.value)}
                 placeholder="留空不加浮水印"
                 maxLength={50}
-                disabled={!cleanDataUrl}
+                disabled={!cleanDataUrl && !originalPreviewUrl}
               />
             </label>
             {previewUrl && (

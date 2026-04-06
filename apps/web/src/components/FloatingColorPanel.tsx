@@ -9,7 +9,9 @@ type ColorInfo = { name: string; hex: string };
 type FloatingColorPanelProps = {
   visible: boolean;
   onClose: () => void;
-  // focus color
+  // focus color / mask
+  focusMaskEnabled: boolean;
+  onFocusMaskEnabledChange: (v: boolean) => void;
   focusColorName: string;
   focusColorSearch: string;
   focusColorMenuOpen: boolean;
@@ -75,6 +77,8 @@ function PortalDropdown({ anchorRef, children }: { anchorRef: React.RefObject<HT
 export default function FloatingColorPanel({
   visible,
   onClose,
+  focusMaskEnabled,
+  onFocusMaskEnabledChange,
   focusColorName,
   focusColorSearch,
   focusColorMenuOpen,
@@ -109,8 +113,8 @@ export default function FloatingColorPanel({
   const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
   const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const focusTriggerRef = useRef<HTMLDivElement | null>(null);
   const editTriggerRef = useRef<HTMLDivElement | null>(null);
+  const focusTriggerRef = useRef<HTMLDivElement | null>(null);
 
   // Reset position & size on close
   const handleClose = useCallback(() => {
@@ -163,6 +167,14 @@ export default function FloatingColorPanel({
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
   }, [pos]);
+
+  // ESC 關閉
+  useEffect(() => {
+    if (!visible) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') handleClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [visible, handleClose]);
 
   // Keep panel within viewport
   useEffect(() => {
@@ -217,7 +229,7 @@ export default function FloatingColorPanel({
 
       {/* Content */}
       <div className="floating-panel-body">
-        {/* Focus color */}
+        {/* Focus color dropdown */}
         <label>
           <span className="floating-label-row">
             焦點色
@@ -227,19 +239,11 @@ export default function FloatingColorPanel({
             <div className="color-select-trigger-input" ref={focusTriggerRef}>
               <input
                 type="text"
-                placeholder={constructionMode ? '施工模式焦點由任務決定' : '搜尋焦點色...'}
+                placeholder={constructionMode ? '施工模式：由任務選取' : '選擇焦點色…'}
                 value={focusColorMenuOpen ? focusColorSearch : selectedFocusColor ? selectedFocusColor.name : ''}
                 disabled={constructionMode}
-                onFocus={() => {
-                  if (constructionMode) return;
-                  onFocusColorMenuOpenChange(true);
-                  onFocusColorSearchChange('');
-                }}
-                onChange={(e) => {
-                  if (constructionMode) return;
-                  onFocusColorSearchChange(e.target.value);
-                  if (!focusColorMenuOpen) onFocusColorMenuOpenChange(true);
-                }}
+                onFocus={() => { if (constructionMode) return; onFocusColorMenuOpenChange(true); onFocusColorSearchChange(''); }}
+                onChange={(e) => { if (constructionMode) return; onFocusColorSearchChange(e.target.value); if (!focusColorMenuOpen) onFocusColorMenuOpenChange(true); }}
                 onKeyDown={(e) => {
                   if (constructionMode) return;
                   if (e.key !== 'Enter') return;
@@ -249,17 +253,15 @@ export default function FloatingColorPanel({
                   onFocusColorSearchChange('');
                 }}
               />
-              <button type="button" className="ghost color-select-toggle" onClick={() => onFocusColorMenuOpenChange((v) => !v)}>▾</button>
+              <button type="button" className="ghost color-select-toggle" onClick={() => { if (!constructionMode) onFocusColorMenuOpenChange((v) => !v); }}>▾</button>
             </div>
-            {focusColorMenuOpen && (
+            {focusColorMenuOpen && !constructionMode && (
               <PortalDropdown anchorRef={focusTriggerRef}>
-                <button type="button" className="color-select-option clear-option" onClick={() => {
-                  if (constructionMode) onClearConstructionFocus();
-                  else onFocusColorNameChange('');
-                  onFocusColorMenuOpenChange(false);
-                }}>清除焦點</button>
-                {!constructionMode && filteredFocusColors.map((c) => (
-                  <button key={c.name} type="button" className="color-select-option" onClick={() => { onFocusColorNameChange(c.name); onFocusColorMenuOpenChange(false); }}>
+                <button type="button" className="color-select-option clear-option" onClick={() => { onFocusColorNameChange(''); onFocusColorMenuOpenChange(false); onFocusColorSearchChange(''); }}>
+                  清除焦點
+                </button>
+                {filteredFocusColors.map((c) => (
+                  <button key={c.name} type="button" className="color-select-option" onClick={() => { onFocusColorNameChange(c.name); onFocusColorMenuOpenChange(false); onFocusColorSearchChange(''); }}>
                     <span className="color-pill tiny" style={{ color: c.hex }} />
                     <span>{c.name}</span>
                   </button>
@@ -268,12 +270,27 @@ export default function FloatingColorPanel({
             )}
           </div>
         </label>
+        {constructionMode && (
+          <div className="hint" style={{ marginBottom: 4 }}>施工模式中，焦點色由任務選取與取色工具控制。</div>
+        )}
 
+        {/* Mask toggle */}
+        <label className="switch-row" style={{ minHeight: 28, fontSize: 12 }}>
+          啟用焦點遮罩
+          <input
+            type="checkbox"
+            checked={focusMaskEnabled}
+            disabled={constructionMode || !focusColorName}
+            onChange={(e) => onFocusMaskEnabledChange(e.target.checked)}
+          />
+        </label>
+
+        {/* Neighbor toggle */}
         <label className="switch-row" style={{ minHeight: 28, fontSize: 12 }}>
           同時選取相近色
-          <input type="checkbox" checked={focusNeighborEnabled} disabled={constructionMode} onChange={(e) => onFocusNeighborEnabledChange(e.target.checked)} />
+          <input type="checkbox" checked={focusNeighborEnabled} disabled={constructionMode || !focusColorName} onChange={(e) => onFocusNeighborEnabledChange(e.target.checked)} />
         </label>
-        {focusNeighborEnabled && !constructionMode && (
+        {focusNeighborEnabled && focusColorName && !constructionMode && (
           <div className="inline-field" style={{ marginBottom: 4 }}>
             <span>相近色範圍</span>
             <input type="number" min={1} max={10} step={0.5} value={focusNeighborDeltaE} onChange={(e) => onFocusNeighborDeltaEChange(Math.max(1, Math.min(10, Number(e.target.value) || 1)))} />
