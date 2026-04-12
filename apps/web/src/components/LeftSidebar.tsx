@@ -211,6 +211,7 @@ export type LeftSidebarProps = {
   onMergeThresholdChange: (v: number) => void;
   mergeGroups: { rep: { name: string; hex: string; count: number }; merged: { name: string; hex: string; count: number }[] }[];
   onMergeSimilarColors: () => void;
+  onFlipHorizontal: () => void;
 };
 
 // ── Icons ─────────────────────────────────────────────────────
@@ -809,6 +810,16 @@ export default function LeftSidebar(props: LeftSidebarProps) {
                 >
                   <IconMerge />
                 </button>
+                <button
+                  className="sidebar-icon-btn"
+                  onClick={props.onFlipHorizontal}
+                  title="水平翻轉"
+                  aria-label="水平翻轉"
+                  type="button"
+                  disabled={!props.converted}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3"/><path d="M12 20v2"/><path d="M12 14v2"/><path d="M12 8v2"/><path d="M12 2v2"/></svg>
+                </button>
                 <IconButton icon={<IconConstruction />} label="施工" active={props.constructionPanelVisible} onClick={props.onConstructionPanelToggle} tooltip={`施工面板 (${fmtKey(sc.toggleConstructionPanel)})`} />
                 {props.editColorHex && (
                   <span
@@ -958,7 +969,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
         className="tool-param-popover"
         style={(() => {
           const rect = mergeBtnRef.current!.getBoundingClientRect();
-          return { position: 'fixed', top: rect.top + rect.height / 2, left: rect.right + 8, transform: 'translateY(-50%)', minWidth: 200 };
+          return { position: 'fixed', top: rect.top, left: rect.right + 8, width: 240 };
         })()}
       >
         {/* 閾值輸入列 */}
@@ -986,21 +997,27 @@ export default function LeftSidebar(props: LeftSidebarProps) {
 
             {/* 合併預覽清單 */}
             <div className="merge-popover-list">
-              {props.mergeGroups.slice(0, 10).map((g) => (
-                <div key={g.rep.name} className="merge-popover-row">
-                  <span className="color-pill" style={{ color: g.rep.hex }} />
-                  <span className="merge-popover-rep">{g.rep.name}</span>
-                  <span className="merge-popover-arrow">←</span>
-                  <span className="merge-popover-sources">
-                    {g.merged.map((m) => (
-                      <span key={m.name} className="merge-popover-source">
-                        <span className="color-pill tiny" style={{ color: m.hex }} />
-                        {m.name}
-                      </span>
-                    ))}
-                  </span>
-                </div>
-              ))}
+              <table className="merge-popover-table">
+                <tbody>
+                  {props.mergeGroups.slice(0, 10).map((g) => (
+                    <tr key={g.rep.name}>
+                      <td className="merge-popover-td-rep">
+                        <span className="color-pill" style={{ color: g.rep.hex }} />
+                        <span className="merge-popover-rep">{g.rep.name}</span>
+                      </td>
+                      <td className="merge-popover-td-arrow">←</td>
+                      <td className="merge-popover-td-sources">
+                        {g.merged.map((m) => (
+                          <span key={m.name} className="merge-popover-source">
+                            <span className="color-pill tiny" style={{ color: m.hex }} />
+                            {m.name}
+                          </span>
+                        ))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
               {props.mergeGroups.length > 10 && (
                 <span className="merge-popover-more">…還有 {props.mergeGroups.length - 10} 組</span>
               )}

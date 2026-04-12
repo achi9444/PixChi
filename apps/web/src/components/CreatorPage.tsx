@@ -380,7 +380,7 @@ function ProfileEditor({ apiClient, onSaved }: { apiClient: ApiClient; onSaved?:
           />
         </label>
 
-        <fieldset style={{ border: '2px solid var(--ink)', padding: '12px 16px', marginTop: 12 }}>
+        <fieldset style={{ border: '1px solid var(--line-strong)', borderRadius: 'var(--radius-lg)', padding: '12px 16px', marginTop: 12 }}>
           <legend style={{ padding: '0 6px', color: 'var(--muted)', fontSize: 13 }}>外部聯絡連結</legend>
           {links.length === 0 && (
             <p className="hint" style={{ fontSize: 13, margin: '4px 0 8px' }}>尚未新增任何連結</p>

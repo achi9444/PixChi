@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 type EditTool = 'pan' | 'paint' | 'erase' | 'bucket' | 'picker';
 
@@ -53,6 +53,11 @@ type CanvasPanelProps = {
   onCanvasMouseMove: React.MouseEventHandler<HTMLCanvasElement>;
   onCanvasMouseUp: React.MouseEventHandler<HTMLCanvasElement>;
   onCanvasMouseLeave: React.MouseEventHandler<HTMLCanvasElement>;
+  // large mode tile nav
+  largeTiles?: Array<{ pageNo: number }>;
+  pdfTileThumbMap?: Map<number, string>;
+  largeFullThumb?: string | null;
+  onLargeViewTilePageChange?: (v: number) => void;
 };
 
 export default function CanvasPanel({
@@ -106,9 +111,25 @@ export default function CanvasPanel({
   onCanvasMouseMove,
   onCanvasMouseUp,
   onCanvasMouseLeave,
+  largeTiles,
+  pdfTileThumbMap,
+  largeFullThumb,
+  onLargeViewTilePageChange,
 }: CanvasPanelProps) {
   const [colsDraft, setColsDraft] = useState(String(cols));
   const [rowsDraft, setRowsDraft] = useState(String(rows));
+  const tileNavRef = useRef<HTMLDivElement>(null);
+
+  // tile-nav-strip 的滾輪事件不能冒泡到 canvas-wrap（會觸發縮放），用 native listener 攔截
+  useEffect(() => {
+    const el = tileNavRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.stopPropagation();
+    };
+    el.addEventListener('wheel', onWheel, { passive: true });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
   useEffect(() => { setColsDraft(String(cols)); }, [cols]);
   useEffect(() => { setRowsDraft(String(rows)); }, [rows]);
 
@@ -128,19 +149,8 @@ export default function CanvasPanel({
       <div className="canvas-header">
         {/* ── 左區：尺寸資訊 + 專案名稱 ── */}
         <div className="canvas-header-left">
-          {/* 大圖分塊操作範圍（僅大圖模式顯示） */}
-          {hasConverted && largeGridMode && (
-            <>
-              <select value={largeOperationScope} onChange={(e) => onLargeOperationScopeChange(e.target.value as 'tile' | 'all')} title="操作範圍">
-                <option value="tile">當前分塊</option>
-                <option value="all">全圖</option>
-              </select>
-              <span className="tool-divider" />
-            </>
-          )}
-
           {/* 尺寸輸入 */}
-          {hasConverted && (
+          {(hasConverted || hasImageBitmap) && (
             <div className="canvas-info">
               <input
                 type="number"
@@ -321,64 +331,96 @@ export default function CanvasPanel({
         </div>
       </div>
 
-        {/* ── Canvas ── */}
-        <div className="canvas-wrap" ref={canvasWrapRef} style={{ position: 'relative' }}>
-          {!hasConverted && !hasImageBitmap && (
-            <div className="empty-state-card" style={{ position: 'absolute', inset: 0 }}>
-              <div className="empty-state-icon">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <rect x="3" y="3" width="18" height="18" rx="3"/>
-                  <circle cx="8.5" cy="8.5" r="1.5"/>
-                  <polyline points="21 15 16 10 5 21"/>
-                </svg>
+        {/* ── Canvas + Tile Nav ── */}
+        <div className="canvas-body">
+          <div className="canvas-wrap" ref={canvasWrapRef} style={{ position: 'relative' }}>
+            {!hasConverted && !hasImageBitmap && (
+              <div className="empty-state-card" style={{ position: 'absolute', inset: 0 }}>
+                <div className="empty-state-icon">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="3" y="3" width="18" height="18" rx="3"/>
+                    <circle cx="8.5" cy="8.5" r="1.5"/>
+                    <polyline points="21 15 16 10 5 21"/>
+                  </svg>
+                </div>
+                <p className="empty-state-title">開始製作拼豆圖紙</p>
+                <p className="empty-state-desc">在左側面板選擇色庫、上傳圖片，點擊「開始轉換」後圖紙會顯示在這裡。</p>
+                <ol className="empty-state-steps">
+                  <li><span className="step-num">1</span>選擇作用群組（色庫）</li>
+                  <li><span className="step-num">2</span>上傳或拖曳一張圖片</li>
+                  <li><span className="step-num">3</span>設定格線大小後點「開始轉換」</li>
+                </ol>
+                <p className="empty-state-desc" style={{ marginTop: 8 }}>
+                  或點擊左側「建立空白畫布」，從零開始繪製。
+                </p>
               </div>
-              <p className="empty-state-title">開始製作拼豆圖紙</p>
-              <p className="empty-state-desc">在左側面板選擇色庫、上傳圖片，點擊「開始轉換」後圖紙會顯示在這裡。</p>
-              <ol className="empty-state-steps">
-                <li><span className="step-num">1</span>選擇作用群組（色庫）</li>
-                <li><span className="step-num">2</span>上傳或拖曳一張圖片</li>
-                <li><span className="step-num">3</span>設定格線大小後點「開始轉換」</li>
-              </ol>
-              <p className="empty-state-desc" style={{ marginTop: 8 }}>
-                或點擊左側「建立空白畫布」，從零開始繪製。
-              </p>
+            )}
+            <canvas
+              ref={canvasRef}
+              className={
+                cropToolEnabled && hasImageBitmap
+                  ? 'tool-crop'
+                  : gridCropActive
+                  ? 'tool-crop'
+                  : !hasConverted
+                  ? 'tool-pan'
+                  : editTool === 'pan'
+                  ? 'tool-pan'
+                  : editTool === 'erase'
+                  ? 'tool-erase'
+                  : editTool === 'picker'
+                  ? 'tool-picker'
+                  : 'tool-paint'
+              }
+              style={{
+                ...(canvasCursor ? { cursor: canvasCursor } : {}),
+                opacity: (!hasConverted && !hasImageBitmap) ? 0 : 1,
+              }}
+              width={960}
+              height={960}
+              onClick={onCanvasClick}
+              onMouseDown={onCanvasMouseDown}
+              onMouseMove={onCanvasMouseMove}
+              onMouseUp={onCanvasMouseUp}
+              onMouseLeave={onCanvasMouseLeave}
+            />
+          </div>
+
+          {/* ── 大圖分塊導覽條（右側）── */}
+          {largeGridMode && largeTiles && largeTiles.length > 0 && onLargeViewTilePageChange && (
+            <div className="tile-nav-strip" ref={tileNavRef}>
+              {/* 全圖縮覽 */}
+              <button
+                type="button"
+                className={`tile-nav-item${largeViewTilePage === 0 ? ' active' : ''}`}
+                onClick={() => onLargeViewTilePageChange(0)}
+                title="全圖（概覽）"
+              >
+                {largeFullThumb
+                  ? <img src={largeFullThumb} alt="全圖" className="tile-nav-thumb" />
+                  : <div className="tile-nav-thumb-placeholder" />
+                }
+                <span>全圖</span>
+              </button>
+              {/* 各分塊 */}
+              {largeTiles.map((tile) => (
+                <button
+                  key={tile.pageNo}
+                  type="button"
+                  className={`tile-nav-item${largeViewTilePage === tile.pageNo ? ' active' : ''}`}
+                  onClick={() => onLargeViewTilePageChange(tile.pageNo)}
+                  title={`分塊 #${tile.pageNo}`}
+                >
+                  {pdfTileThumbMap?.get(tile.pageNo)
+                    ? <img src={pdfTileThumbMap.get(tile.pageNo)} alt={`#${tile.pageNo}`} className="tile-nav-thumb" />
+                    : <div className="tile-nav-thumb-placeholder" />
+                  }
+                  <span>#{tile.pageNo}</span>
+                </button>
+              ))}
             </div>
           )}
-          <canvas
-            ref={canvasRef}
-            className={
-              cropToolEnabled && hasImageBitmap
-                ? 'tool-crop'
-                : gridCropActive
-                ? 'tool-crop'
-                : !hasConverted
-                ? 'tool-pan'
-                : editTool === 'pan'
-                ? 'tool-pan'
-                : editTool === 'erase'
-                ? 'tool-erase'
-                : editTool === 'picker'
-                ? 'tool-picker'
-                : 'tool-paint'
-            }
-            style={{
-              ...(canvasCursor ? { cursor: canvasCursor } : {}),
-              opacity: (!hasConverted && !hasImageBitmap) ? 0 : 1,
-            }}
-            width={960}
-            height={960}
-            onClick={onCanvasClick}
-            onMouseDown={onCanvasMouseDown}
-            onMouseMove={onCanvasMouseMove}
-            onMouseUp={onCanvasMouseUp}
-            onMouseLeave={onCanvasMouseLeave}
-          />
         </div>
-      {largeGridMode && (
-        <p className="hint">
-          大圖模式：{largeViewTilePage > 0 ? `分塊 #${largeViewTilePage}` : '全圖'}｜替換/油漆桶可選「當前分塊 / 全圖」
-        </p>
-      )}
     </section>
   );
 }

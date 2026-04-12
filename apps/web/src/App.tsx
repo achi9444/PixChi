@@ -363,6 +363,7 @@ export default function App() {
   const [cropToolEnabled, setCropToolEnabled] = useState(true);
   const [cropHoverMode, setCropHoverMode] = useState<CropDragMode | null>(null);
   const [editTool, setEditTool] = useState<'pan' | 'paint' | 'erase' | 'bucket' | 'picker'>('pan');
+  const prevEditToolRef = useRef<'pan' | 'paint' | 'erase' | 'bucket' | 'picker' | null>(null);
   const selectEditTool = (tool: 'pan' | 'paint' | 'erase' | 'bucket' | 'picker') => {
     setEditTool(tool);
     // 切換編輯工具時，若格點裁剪啟用，自動取消
@@ -430,6 +431,7 @@ export default function App() {
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [activeDraftId, setActiveDraftId] = useState('');
   const [activeDraftVersionId, setActiveDraftVersionId] = useState('');
+  const [draftLoadAt, setDraftLoadAt] = useState(0);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [isDraftBusy, setIsDraftBusy] = useState(false);
   const [draftRenameInput, setDraftRenameInput] = useState('');
@@ -592,24 +594,39 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   // 合併相近色預覽：以顆數最多的色為代表，貪婪分組
   const mergeGroups = useMemo(() => {
     if (!mergeThreshold || !statsRows.length) return [];
-    const visited = new Set<string>();
-    const groups: { rep: { name: string; hex: string; count: number }; merged: { name: string; hex: string; count: number }[] }[] = [];
-    for (const rep of statsRows) {
-      if (visited.has(rep.name)) continue;
-      visited.add(rep.name);
-      const repLab = rgbToLab(...hexToRgb(rep.hex));
-      const merged: { name: string; hex: string; count: number }[] = [];
-      for (const other of statsRows) {
-        if (visited.has(other.name)) continue;
-        const d = deltaE2000(repLab, rgbToLab(...hexToRgb(other.hex)));
-        if (d <= mergeThreshold) {
-          visited.add(other.name);
-          merged.push({ name: other.name, hex: other.hex, count: other.count });
-        }
-      }
-      if (merged.length > 0) groups.push({ rep: { name: rep.name, hex: rep.hex, count: rep.count }, merged });
+    const n = statsRows.length;
+    const labs = statsRows.map(r => rgbToLab(...hexToRgb(r.hex)));
+    // Union-Find：index 越小 = 用量越高 = 優先作為代表色
+    const parent = statsRows.map((_, i) => i);
+    function ufFind(x: number): number {
+      if (parent[x] !== x) parent[x] = ufFind(parent[x]);
+      return parent[x];
     }
-    return groups;
+    function ufUnion(a: number, b: number) {
+      const ra = ufFind(a), rb = ufFind(b);
+      if (ra === rb) return;
+      if (ra < rb) parent[rb] = ra;
+      else parent[ra] = rb;
+    }
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (deltaE2000(labs[i], labs[j]) <= mergeThreshold) ufUnion(i, j);
+      }
+    }
+    // 按 root 分組
+    const groupMap = new Map<number, number[]>();
+    for (let i = 0; i < n; i++) {
+      const root = ufFind(i);
+      if (!groupMap.has(root)) groupMap.set(root, []);
+      groupMap.get(root)!.push(i);
+    }
+    return Array.from(groupMap.values())
+      .filter(members => members.length > 1)
+      .map(members => {
+        const rep = statsRows[members[0]];
+        const merged = members.slice(1).map(i => ({ name: statsRows[i].name, hex: statsRows[i].hex, count: statsRows[i].count }));
+        return { rep: { name: rep.name, hex: rep.hex, count: rep.count }, merged };
+      });
   }, [statsRows, mergeThreshold]);
 
   const focusVisibleNameSet = useMemo(() => {
@@ -711,6 +728,27 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     }
     return map;
   }, [converted, pdfPagination]);
+  const largeFullThumb = useMemo(() => {
+    if (!converted || !largeGridMode || !pdfPagination || pdfPagination.totalTiles <= 1) return null;
+    const maxDim = 56;
+    const ratio = Math.min(maxDim / converted.cols, maxDim / converted.rows);
+    const w = Math.max(1, Math.round(converted.cols * ratio));
+    const h = Math.max(1, Math.round(converted.rows * ratio));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx2 = c.getContext('2d');
+    if (!ctx2) return null;
+    const sx = w / converted.cols;
+    const sy = h / converted.rows;
+    for (let cy = 0; cy < converted.rows; cy++) {
+      for (let cx = 0; cx < converted.cols; cx++) {
+        const cell = converted.cells[cy * converted.cols + cx];
+        ctx2.fillStyle = cell?.hex ?? '#ffffff';
+        ctx2.fillRect(Math.floor(cx * sx), Math.floor(cy * sy), Math.ceil(sx), Math.ceil(sy));
+      }
+    }
+    return c.toDataURL('image/png');
+  }, [converted, largeGridMode, pdfPagination]);
   const selectedLargeTile = useMemo(() => {
     if (!pdfPagination || !largeGridMode || largeViewTilePage <= 0) return null;
     return pdfPagination.tiles.find((t) => t.pageNo === largeViewTilePage) ?? null;
@@ -1441,6 +1479,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         setActiveDraftVersionId(versionId ?? '');
         setLastSavedAt(Date.now());
         lastSavedFingerprintRef.current = buildDraftFingerprint(snapshot);
+        setDraftLoadAt(Date.now());
         setStatusText(versionId ? '已還原到指定版本。' : '草稿載入完成。');
       } catch (err) {
         setStatusText(`草稿載入失敗：${(err as Error).message}`);
@@ -1598,6 +1637,23 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     if (!statsRows.some((r) => r.name === focusColorName)) setFocusColorName('');
   }, [statsRows, focusColorName]);
 
+  // 焦點色選單開啟時暫時切換為取色工具，關閉後恢復
+  useEffect(() => {
+    if (focusColorMenuOpen) {
+      prevEditToolRef.current = editTool;
+      setEditTool('picker');
+    } else {
+      if (prevEditToolRef.current !== null) {
+        setEditTool(prevEditToolRef.current);
+        prevEditToolRef.current = null;
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusColorMenuOpen]);
+
+  const focusColorMenuOpenRef = useRef(false);
+  useEffect(() => { focusColorMenuOpenRef.current = focusColorMenuOpen; }, [focusColorMenuOpen]);
+
   useEffect(() => {
     const onPointerDown = (ev: MouseEvent) => {
       const target = ev.target as Node;
@@ -1608,6 +1664,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         setEditColorMenuOpen(false);
       }
       if (focusColorMenuRef.current && !focusColorMenuRef.current.contains(target) && !inPortal) {
+        // 點到畫布且選單開著：讓 onCanvasClick 處理，不在 mousedown 時提前關閉
+        if (focusColorMenuOpenRef.current && target === canvasRef.current) return;
         setFocusColorMenuOpen(false);
       }
     };
@@ -1730,7 +1788,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, height);
     const fullTotal = converted.cols * converted.rows;
-    const fastRender = largeGridMode && fullTotal > GRID_SOFT_LIMIT && !selectedLargeTile;
+    // fastRender：大圖全圖模式下略去格線與色號以提升效能；但縮放到格子夠大時仍顯示色號
+    const fastRender = largeGridMode && fullTotal > GRID_SOFT_LIMIT && !selectedLargeTile && cell < 16;
     const showConstruction = constructionMode && constructionTasks.length > 0;
 
     for (let vy = 0; vy < viewRows; vy++) {
@@ -1866,34 +1925,92 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
 
     if (showRuler) {
       ctx.save();
-      const RULER = Math.max(20, Math.min(32, cell * 1.5));  // 固定帶寬，貼近格線
+      const RULER = Math.max(18, Math.min(cell, 32));  // 盡量與格子同寬
       const gridPxW = viewCols * cell;
       const gridPxH = viewRows * cell;
       const rightX = ox + gridPxW;
       const bottomY = oy + gridPxH;
-      // 尺規背景帶（緊貼格線四邊）
+      // 尺規背景帶
       ctx.fillStyle = '#ffffffd9';
-      ctx.fillRect(ox, oy - RULER, gridPxW, RULER);           // top
-      ctx.fillRect(ox - RULER, oy, RULER, gridPxH);           // left
-      ctx.fillRect(rightX, oy, RULER, gridPxH);               // right
-      ctx.fillRect(ox, bottomY, gridPxW, RULER);              // bottom
-      // 標籤
+      ctx.fillRect(ox, oy - RULER, gridPxW, RULER);
+      ctx.fillRect(ox - RULER, oy, RULER, gridPxH);
+      ctx.fillRect(rightX, oy, RULER, gridPxH);
+      ctx.fillRect(ox, bottomY, gridPxW, RULER);
+      // 格線（每格分隔）
+      ctx.strokeStyle = '#c8d6d0';
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      for (let gx = 0; gx <= viewCols; gx++) {
+        const x = Math.floor(ox + gx * cell) + 0.5;
+        ctx.moveTo(x, oy - RULER); ctx.lineTo(x, oy);
+        ctx.moveTo(x, bottomY);    ctx.lineTo(x, bottomY + RULER);
+      }
+      for (let gy = 0; gy <= viewRows; gy++) {
+        const y = Math.floor(oy + gy * cell) + 0.5;
+        ctx.moveTo(ox - RULER, y); ctx.lineTo(ox, y);
+        ctx.moveTo(rightX, y);     ctx.lineTo(rightX + RULER, y);
+      }
+      ctx.stroke();
+      // 數字（以格子中心為基準，1-based）
+      const fontSize = Math.max(8, Math.min(11, Math.floor(RULER * 0.48)));
       ctx.fillStyle = '#465a52';
-      ctx.font = `${Math.max(9, Math.min(12, Math.floor(RULER * 0.5)))}px Segoe UI`;
+      ctx.font = `${fontSize}px Segoe UI`;
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
-      for (let gx = 0; gx <= viewCols; gx += guideStep) {
-        const x = ox + gx * cell;
-        const label = String(viewStartCol + gx);
-        ctx.fillText(label, x, oy - RULER / 2);               // top
-        ctx.fillText(label, x, bottomY + RULER / 2);          // bottom
+      const nearEdge = Math.floor(fontSize * 0.6) + 2;
+      const rulerStepX = Math.max(1, Math.ceil((fontSize * 2) / cell));
+      const rulerStepY = Math.max(1, Math.ceil((fontSize * 1.5) / cell));
+      for (let gx = 0; gx < viewCols; gx += rulerStepX) {
+        const x = ox + (gx + 0.5) * cell;
+        ctx.fillText(String(converted.cols - (viewStartCol + gx)), x, oy - nearEdge);   // top: 緊貼上邊
+        ctx.fillText(String(viewStartCol + gx + 1), x, bottomY + nearEdge);             // bottom: 緊貼下邊
       }
-      for (let gy = 0; gy <= viewRows; gy += guideStep) {
-        const y = oy + gy * cell;
-        const label = String(viewStartRow + gy);
-        ctx.textAlign = 'center';
-        ctx.fillText(label, ox - RULER / 2, y);               // left
-        ctx.fillText(label, rightX + RULER / 2, y);           // right
+      for (let gy = 0; gy < viewRows; gy += rulerStepY) {
+        const y = oy + (gy + 0.5) * cell;
+        ctx.textAlign = 'right';
+        ctx.fillText(String(converted.rows - (viewStartRow + gy)), ox - nearEdge, y);   // left: 緊貼左邊
+        ctx.textAlign = 'left';
+        ctx.fillText(String(viewStartRow + gy + 1), rightX + nearEdge, y);              // right: 緊貼右邊
+      }
+      ctx.restore();
+    }
+
+    // ── 大圖全圖模式：分塊邊界線 ──
+    if (largeGridMode && !selectedLargeTile && pdfPagination && pdfPagination.totalTiles > 1) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(80, 160, 120, 0.7)';
+      ctx.lineWidth = Math.max(1, cell * 0.15);
+      ctx.setLineDash([4, 3]);
+      // 垂直分塊線
+      for (let px2 = pdfPagination.tileCols; px2 < converted.cols; px2 += pdfPagination.tileCols) {
+        const x = ox + px2 * cell;
+        ctx.beginPath();
+        ctx.moveTo(x, oy);
+        ctx.lineTo(x, oy + viewRows * cell);
+        ctx.stroke();
+      }
+      // 水平分塊線
+      for (let py2 = pdfPagination.tileRows; py2 < converted.rows; py2 += pdfPagination.tileRows) {
+        const y = oy + py2 * cell;
+        ctx.beginPath();
+        ctx.moveTo(ox, y);
+        ctx.lineTo(ox + viewCols * cell, y);
+        ctx.stroke();
+      }
+      // 分塊編號
+      if (cell >= 2) {
+        ctx.setLineDash([]);
+        ctx.font = `bold ${Math.max(10, Math.min(cell * 2, 18))}px sans-serif`;
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+        for (const tile of pdfPagination.tiles) {
+          const tx = ox + tile.startCol * cell + 3;
+          const ty = oy + tile.startRow * cell + 2;
+          ctx.fillStyle = 'rgba(0,0,0,0.45)';
+          ctx.fillText(`#${tile.pageNo}`, tx + 1, ty + 1);
+          ctx.fillStyle = 'rgba(80,160,120,0.95)';
+          ctx.fillText(`#${tile.pageNo}`, tx, ty);
+        }
       }
       ctx.restore();
     }
@@ -2049,7 +2166,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       ctx.fillText(dimLabel, cropPx + cropPw / 2, cropPy + cropPh / 2);
       ctx.restore();
     }
-  }, [converted, imageBitmap, cropRect, cropToolEnabled, cropHoverMode, showCode, focusColorName, focusVisibleNameSet, focusMaskEnabled, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery, largeGridMode, selectedLargeTile, constructionMode, constructionTasks.length, constructionShowDoneOverlay, constructionDoneCellSet, constructionCurrentCellSet, editTool, brushSize, selectedEditColor, gridCropRect, beadCircleMode]);
+  }, [converted, imageBitmap, cropRect, cropToolEnabled, cropHoverMode, showCode, focusColorName, focusVisibleNameSet, focusMaskEnabled, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery, largeGridMode, selectedLargeTile, pdfPagination, constructionMode, constructionTasks.length, constructionShowDoneOverlay, constructionDoneCellSet, constructionCurrentCellSet, editTool, brushSize, selectedEditColor, gridCropRect, beadCircleMode, draftLoadAt]);
 
   useEffect(() => {
     drawGrid();
@@ -2169,6 +2286,17 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setImageMeta(`來源圖：${img.width} x ${img.height}`);
     setStatusText(`已載入圖片：${file.name}`);
     setSidebarCollapseSignal((s) => s + 1);
+    // 重設專案名稱與編輯狀態
+    setProjectName('未命名專案');
+    setEditColorName('');
+    setFocusColorName('');
+    setFocusColorSearch('');
+    setFocusColorMenuOpen(false);
+    setEditColorMenuOpen(false);
+    setUndoStack([]);
+    setRedoStack([]);
+    setHistoryItems([]);
+    setLastPickedOldColor(null);
   };
 
   const runConvert = async (options?: { overrideCols?: number; overrideRows?: number; allowOversize?: boolean; useLargeMode?: boolean }) => {
@@ -2342,13 +2470,32 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       rows: oldRows,
       gridMeta: `${oldCols} x ${oldRows}（${sizeLabel}）`,
     };
-    // Nearest-neighbor scaling: sample from old grid proportionally
     const newCells: Cell[] = [];
+    const isDownscaling = clampedCols <= oldCols && clampedRows <= oldRows;
     for (let y = 0; y < clampedRows; y++) {
       for (let x = 0; x < clampedCols; x++) {
-        const srcX = Math.min(Math.round(x * oldCols / clampedCols), oldCols - 1);
-        const srcY = Math.min(Math.round(y * oldRows / clampedRows), oldRows - 1);
-        newCells.push({ ...oldCells[srcY * oldCols + srcX], x, y });
+        if (isDownscaling) {
+          // 眾數取樣：收集對應舊格子，選最多數的顏色
+          const x0 = Math.floor(x * oldCols / clampedCols);
+          const x1 = Math.min(Math.ceil((x + 1) * oldCols / clampedCols), oldCols);
+          const y0 = Math.floor(y * oldRows / clampedRows);
+          const y1 = Math.min(Math.ceil((y + 1) * oldRows / clampedRows), oldRows);
+          const freq: Record<string, { count: number; cell: Cell }> = {};
+          for (let sy = y0; sy < y1; sy++) {
+            for (let sx = x0; sx < x1; sx++) {
+              const c = oldCells[sy * oldCols + sx];
+              if (!freq[c.hex]) freq[c.hex] = { count: 0, cell: c };
+              freq[c.hex].count++;
+            }
+          }
+          const best = Object.values(freq).reduce((a, b) => (b.count > a.count ? b : a));
+          newCells.push({ ...best.cell, x, y });
+        } else {
+          // 放大或無色庫時維持最近鄰插值
+          const srcX = Math.min(Math.round(x * oldCols / clampedCols), oldCols - 1);
+          const srcY = Math.min(Math.round(y * oldRows / clampedRows), oldRows - 1);
+          newCells.push({ ...oldCells[srcY * oldCols + srcX], x, y });
+        }
       }
     }
     const newConverted = { ...converted, cols: clampedCols, rows: clampedRows, cells: newCells };
@@ -2440,6 +2587,24 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setGridMeta(`${newCols} x ${newRows}`);
     setStatusText(`已套用格線裁切：${newCols} x ${newRows}`);
     setUndoStack((prev) => [...prev, { changes: [], label: '套用格線裁切', bulkChange: { before, after } }]);
+    setRedoStack([]);
+  };
+
+  // 水平翻轉格線
+  const flipHorizontal = () => {
+    if (!converted) return;
+    const { cols: c, rows: r, cells } = converted;
+    const newCells = cells.map((cell, idx) => {
+      const row = Math.floor(idx / c);
+      const col = idx % c;
+      const srcIdx = row * c + (c - 1 - col);
+      return { ...cells[srcIdx], x: col, y: row };
+    });
+    const newConverted = { ...converted, cells: newCells };
+    const before: BulkSnapshot = { converted, cols, rows, gridMeta };
+    const after: BulkSnapshot = { converted: newConverted, cols, rows, gridMeta };
+    setConverted(newConverted);
+    setUndoStack((prev) => [...prev, { changes: [], label: '水平翻轉', bulkChange: { before, after } }]);
     setRedoStack([]);
   };
 
@@ -2626,7 +2791,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     return null;
   };
 
-  const applyBrushByIndex = (idx: number) => {
+  const applyBrushAtCoords = (centerX: number, centerY: number) => {
     if (!converted) return;
     const isPaintToEmpty = editTool === 'paint' && editColorName === EMPTY_EDIT_COLOR_NAME;
     const chosen =
@@ -2635,8 +2800,6 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         : null;
     if (editTool === 'paint' && !isPaintToEmpty && !chosen) return;
 
-    const centerX = idx % converted.cols;
-    const centerY = Math.floor(idx / converted.cols);
     const half = Math.floor((brushSize - 1) / 2);
     const startX = centerX - half;
     const startY = centerY - half;
@@ -2669,6 +2832,11 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     const toolLabel = editTool === 'erase' || isPaintToEmpty ? '橡皮擦' : '上色';
     pushUndo(changes, `${toolLabel} ${brushSize}x${brushSize}（${changes.length} 格）`);
     setConverted({ ...converted, cells: nextCells });
+  };
+
+  const applyBrushByIndex = (idx: number) => {
+    if (!converted) return;
+    applyBrushAtCoords(idx % converted.cols, Math.floor(idx / converted.cols));
   };
 
   const applyBucketByIndex = (idx: number) => {
@@ -2745,7 +2913,10 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     if (gridCropRect && converted && cropToolEnabled) return;
     if (!converted) return;
     const idx = getCellIndexByPointer(ev.clientX, ev.clientY);
-    if (idx == null) return;
+    if (idx == null) {
+      if (editTool === 'erase') applyEraseAtHover();
+      return;
+    }
     if (constructionMode) {
       if (editTool === 'pan') return;
       if (editTool !== 'picker') return;
@@ -2764,10 +2935,11 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       if (!cell || cell.isEmpty) {
         setFocusColorName('');
         setStatusText('該格為空白，已清除焦點。');
-        return;
+      } else {
+        setFocusColorName(cell.colorName);
+        setStatusText(`已將 ${cell.colorName} 設為焦點色。`);
       }
-      setFocusColorName(cell.colorName);
-      setStatusText(`已將 ${cell.colorName} 設為焦點色。`);
+      if (focusColorMenuOpen) setFocusColorMenuOpen(false);
       return;
     }
     if (editTool === 'bucket') {
@@ -2775,6 +2947,12 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       return;
     }
     applyBrushByIndex(idx);
+  };
+
+  // 橡皮擦超出格子邊界時，從 hoverCellRef 取得中心座標並套用筆刷
+  const applyEraseAtHover = () => {
+    const hover = hoverCellRef.current;
+    if (hover) applyBrushAtCoords(hover.col, hover.row);
   };
 
   const onCanvasMouseDown = (ev: React.MouseEvent<HTMLCanvasElement>) => {
@@ -2815,7 +2993,10 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     if (editTool === 'bucket' || editTool === 'picker') return;
     if (editTool !== 'erase' && editTool !== 'paint') return;
     const idx = getCellIndexByPointer(ev.clientX, ev.clientY);
-    if (idx == null) return;
+    if (idx == null) {
+      if (editTool === 'erase') applyEraseAtHover();
+      return;
+    }
     lastDragCellIdxRef.current = idx;
     applyBrushByIndex(idx);
   };
@@ -2981,7 +3162,9 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         const cy = Math.floor((y - meta.oy) / meta.cell);
         const col = meta.viewStartCol + cx;
         const row = meta.viewStartRow + cy;
-        if (col >= 0 && row >= 0 && col < converted.cols && row < converted.rows) {
+        const inBounds = col >= 0 && row >= 0 && col < converted.cols && row < converted.rows;
+        // 橡皮擦：直接使用原始座標（含超出邊界），渲染時自行夾緊顯示範圍
+        if (inBounds || editTool === 'erase') {
           const prev = hoverCellRef.current;
           if (!prev || prev.col !== col || prev.row !== row) {
             hoverCellRef.current = { col, row };
@@ -3010,7 +3193,10 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     if (editTool === 'bucket') return;
     if (editTool !== 'erase' && editTool !== 'paint') return;
     const idx = getCellIndexByPointer(ev.clientX, ev.clientY);
-    if (idx == null) return;
+    if (idx == null) {
+      if (editTool === 'erase') applyEraseAtHover();
+      return;
+    }
     if (idx === lastDragCellIdxRef.current) return;
     lastDragCellIdxRef.current = idx;
     applyBrushByIndex(idx);
@@ -3031,7 +3217,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     }
     if (editTool === 'erase' || editTool === 'paint') lastDragCellIdxRef.current = null;
     if (editTool === 'pan') panLastPointRef.current = null;
-    if (hoverCellRef.current) {
+    // 橡皮擦離開 canvas 元素時保留最後位置，讓預覽仍可見
+    if (editTool !== 'erase' && hoverCellRef.current) {
       hoverCellRef.current = null;
       drawGrid();
     }
@@ -3053,6 +3240,27 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     panLastPointRef.current = null;
     lastDragCellIdxRef.current = null;
   };
+
+  const applyPaletteSwitch = useCallback((targetGroupName?: string) => {
+    const group = targetGroupName ? groups.find((g) => g.name === targetGroupName) : activeGroup;
+    if (!converted || !group) return;
+    const palette = group.colors;
+    const hexMap = new Map(palette.map((c) => [c.hex.toLowerCase(), c]));
+    const changes: CellChange[] = [];
+    const nextCells = converted.cells.map((cell, idx) => {
+      if (cell.isEmpty || !cell.hex) return cell;
+      const direct = hexMap.get(cell.hex.toLowerCase());
+      const target = direct ?? mapColor([...cell.rgb] as [number, number, number], palette, 'lab_nearest');
+      if (target.name === cell.colorName && target.hex === cell.hex) return cell;
+      const after = { ...cell, colorName: target.name, hex: target.hex };
+      changes.push({ idx, before: { ...cell }, after });
+      return after;
+    });
+    if (!changes.length) { setStatusText('所有格子已符合目前色庫，無需轉換。'); return; }
+    pushUndo(changes, `切換色庫：${group.name}（影響 ${changes.length} 格）`);
+    setConverted({ ...converted, cells: nextCells });
+    setStatusText(`已套用色庫「${group.name}」，影響 ${changes.length} 格。`);
+  }, [converted, activeGroup, groups, pushUndo]);
 
   const replaceAllSameColor = () => {
     if (!converted || !editColorName) return;
@@ -3679,13 +3887,15 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         const minCellW = circleR * 2 + 14;
         const cols = Math.max(1, Math.floor(availW / minCellW));
         const cellW = availW / cols;
-        let i = 0;
-        for (const r of statsRows) {
-          const col = i % cols;
-          const row = Math.floor(i / cols);
+        const maxRows = Math.max(1, Math.floor((contentTop - margin) / cellH));
+        // column-major：由上至下填滿第一欄，再換下一欄（數量已由多到少排序）
+        for (let i = 0; i < statsRows.length; i++) {
+          const col = Math.floor(i / maxRows);
+          const row = i % maxRows;
+          if (col >= cols) break;
+          const r = statsRows[i];
           const cx = tx + col * cellW + cellW / 2;
           const cy = contentTop - circleR - row * cellH;
-          if (cy - circleR - 5 - countSize < margin) break;
           const [rr, gg, bb] = hexToRgb(r.hex);
           page.drawCircle({ x: cx, y: cy, size: circleR, color: rgb(rr / 255, gg / 255, bb / 255) });
           const isDark = 0.299 * rr + 0.587 * gg + 0.114 * bb > 145;
@@ -3695,7 +3905,6 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           const countStr = String(r.count);
           const countW = latin.widthOfTextAtSize(countStr, countSize);
           page.drawText(countStr, { x: cx - countW / 2, y: cy - circleR - 4 - countSize, size: countSize, font, color: rgb(0.3, 0.3, 0.3) });
-          i++;
         }
       };
       const drawSideStats = (page: any, tx: number, contentTop: number, availW?: number) => {
@@ -4211,7 +4420,11 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           pdfTileThumbMap={pdfTileThumbMap}
           largeGridMode={largeGridMode}
           largeViewTilePage={largeViewTilePage}
-          onLargeViewTilePageChange={setLargeViewTilePage}
+          onLargeViewTilePageChange={(v) => {
+            setLargeViewTilePage(v);
+            setZoom(1);
+            setPanOffset({ x: 0, y: 0 });
+          }}
           showRuler={showRuler}
           onShowRulerChange={setShowRuler}
           showGuide={showGuide}
@@ -4355,6 +4568,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onMergeThresholdChange={setMergeThreshold}
           mergeGroups={mergeGroups}
           onMergeSimilarColors={mergeSimilarColors}
+          onFlipHorizontal={flipHorizontal}
         />
 
         <CanvasPanel
@@ -4362,7 +4576,14 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           cols={cols}
           rows={rows}
           onColsChange={(v) => {
-            if (!converted) return;
+            if (!converted) {
+              // 轉換前：用圖片（或裁切範圍）比例計算 rows
+              const srcW = cropRect?.w ?? imageBitmap?.width;
+              const srcH = cropRect?.h ?? imageBitmap?.height;
+              setCols(v);
+              if (srcW && srcH) setRows(Math.max(1, Math.round(v * srcH / srcW)));
+              return;
+            }
             // 等比計算新 rows（以原始比例縮放）
             const newRows = Math.max(1, Math.round(converted.rows * v / converted.cols));
             setCols(v);
@@ -4373,7 +4594,14 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
             }, 400);
           }}
           onRowsChange={(v) => {
-            if (!converted) return;
+            if (!converted) {
+              // 轉換前：用圖片（或裁切範圍）比例計算 cols
+              const srcW = cropRect?.w ?? imageBitmap?.width;
+              const srcH = cropRect?.h ?? imageBitmap?.height;
+              setRows(v);
+              if (srcW && srcH) setCols(Math.max(1, Math.round(v * srcW / srcH)));
+              return;
+            }
             // 等比計算新 cols（以原始比例縮放）
             const newCols = Math.max(1, Math.round(converted.cols * v / converted.rows));
             setRows(v);
@@ -4438,6 +4666,14 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onCanvasMouseMove={onCanvasMouseMove}
           onCanvasMouseUp={onCanvasMouseUp}
           onCanvasMouseLeave={onCanvasMouseLeave}
+          largeTiles={(pdfPagination?.totalTiles ?? 0) > 1 ? pdfPagination!.tiles : undefined}
+          pdfTileThumbMap={pdfTileThumbMap}
+          largeFullThumb={largeFullThumb}
+          onLargeViewTilePageChange={(v) => {
+            setLargeViewTilePage(v);
+            setZoom(1);
+            setPanOffset({ x: 0, y: 0 });
+          }}
         />
 
         <StatsPanel
@@ -4474,6 +4710,11 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       <FloatingColorPanel
         visible={colorPanelVisible}
         onClose={() => setColorPanelVisible(false)}
+        groups={groups}
+        activeGroupName={activeGroupName}
+        hasCanvas={!!converted}
+        onGroupChange={(name) => { setActiveGroupName(name); if (converted) applyPaletteSwitch(name); }}
+        onApplyPalette={applyPaletteSwitch}
         focusColorName={focusColorName}
         focusColorSearch={focusColorSearch}
         focusColorMenuOpen={focusColorMenuOpen}
@@ -4504,6 +4745,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         onAddOneCellOutline={addOneCellOutline}
         zIndex={500 + panelStack.indexOf('color')}
         onBringToFront={() => bringPanelToFront('color')}
+        crossRefGroups={groups}
+        canvasColors={statsRows}
       />
       <FloatingConstructionPanel
         visible={constructionPanelVisible}
@@ -4761,7 +5004,7 @@ function buildExportGridCanvas(
   const showRuler = !!options?.showRuler;
   const showGuide = !!options?.showGuide;
   const guideEvery = Math.max(1, Math.floor(options?.guideEvery ?? 5));
-  const rulerBand = showRuler ? Math.round(32 * exportScale) : 0;
+  const rulerBand = showRuler ? Math.round(cell * 1.2) : 0;
 
   const canvas = document.createElement('canvas');
   canvas.width = converted.cols * cell + pad * 2 + rulerBand * 2;
@@ -4824,25 +5067,42 @@ function buildExportGridCanvas(
     const gridH = converted.rows * cell;
     const rightX = ox + gridW;
     const bottomY = oy + gridH;
+    const midBand = Math.floor(rulerBand / 2);
+    // 格線（每格分隔）
+    ctx.strokeStyle = '#c8d6d0';
+    ctx.lineWidth = Math.max(0.5, exportScale * 0.5);
+    ctx.beginPath();
+    for (let gx = 0; gx <= converted.cols; gx++) {
+      const x = ox + gx * cell + 0.5;
+      ctx.moveTo(x, oy - rulerBand); ctx.lineTo(x, oy);
+      ctx.moveTo(x, bottomY);        ctx.lineTo(x, bottomY + rulerBand);
+    }
+    for (let gy = 0; gy <= converted.rows; gy++) {
+      const y = oy + gy * cell + 0.5;
+      ctx.moveTo(ox - rulerBand, y); ctx.lineTo(ox, y);
+      ctx.moveTo(rightX, y);         ctx.lineTo(rightX + rulerBand, y);
+    }
+    ctx.stroke();
+    // 數字（格子中心，1-based，緊貼畫布邊）
+    const rulerFontSize = Math.max(8, Math.round(cell * 0.48));
+    const nearEdge = Math.floor(rulerFontSize * 0.6) + 2;  // 距離格線的偏移，緊貼畫布
     ctx.fillStyle = '#465a52';
-    const rulerFontSize = Math.max(11, Math.round(14 * exportScale));
     ctx.font = `${rulerFontSize}px "Segoe UI", Arial, sans-serif`;
     ctx.textBaseline = 'middle';
-    const midBand = Math.floor(rulerBand / 2);
     ctx.textAlign = 'center';
-    for (let gx = 0; gx <= converted.cols; gx += guideEvery) {
-      const x = ox + gx * cell;
-      const label = String(gx);
-      ctx.fillText(label, x, oy - midBand);       // top
-      ctx.fillText(label, x, bottomY + midBand);  // bottom
+    const pdfStepX = Math.max(1, Math.ceil((rulerFontSize * 2) / cell));
+    const pdfStepY = Math.max(1, Math.ceil((rulerFontSize * 1.5) / cell));
+    for (let gx = 0; gx < converted.cols; gx += pdfStepX) {
+      const x = ox + (gx + 0.5) * cell;
+      ctx.fillText(String(converted.cols - gx), x, oy - nearEdge);       // top: 緊貼上邊
+      ctx.fillText(String(gx + 1), x, bottomY + nearEdge);               // bottom: 緊貼下邊
     }
-    for (let gy = 0; gy <= converted.rows; gy += guideEvery) {
-      const y = oy + gy * cell;
-      const label = String(gy);
+    for (let gy = 0; gy < converted.rows; gy += pdfStepY) {
+      const y = oy + (gy + 0.5) * cell;
       ctx.textAlign = 'right';
-      ctx.fillText(label, ox - Math.round(6 * exportScale), y);         // left
+      ctx.fillText(String(converted.rows - gy), ox - nearEdge, y);       // left: 緊貼左邊
       ctx.textAlign = 'left';
-      ctx.fillText(label, rightX + Math.round(6 * exportScale), y);     // right
+      ctx.fillText(String(gy + 1), rightX + nearEdge, y);                // right: 緊貼右邊
     }
     ctx.restore();
   }

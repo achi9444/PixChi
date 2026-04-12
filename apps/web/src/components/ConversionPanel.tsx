@@ -174,83 +174,28 @@ export default function ConversionPanel({
 
       {oversizePlan && (
         <div className="oversize-box">
-          <strong>大圖提示</strong>
+          <strong>⚠ 格子數超過建議上限</strong>
           <div className="hint">
-            目前格線 {oversizePlan.cols}x{oversizePlan.rows}（{oversizePlan.total.toLocaleString()} 格）超過建議上限 {gridSoftLimit.toLocaleString()} 格。
-          </div>
-          <div className="row two">
-            <button type="button" className="ghost" onClick={onApplyOversizeSuggest}>
-              自動縮放至 {oversizePlan.suggestCols}x{oversizePlan.suggestRows}
-            </button>
-            {proMode && (
-              <button type="button" className="ghost" onClick={onApplyOversizeLargeMode}>
-                以大圖模式繼續
-              </button>
-            )}
+            {oversizePlan.cols}×{oversizePlan.rows}＝{oversizePlan.total.toLocaleString()} 格（上限 {gridSoftLimit.toLocaleString()} 格）
           </div>
           <div className="row one">
+            <button type="button" className="primary" onClick={onApplyOversizeSuggest}>
+              縮小至 {oversizePlan.suggestCols}×{oversizePlan.suggestRows} 並轉換
+            </button>
+          </div>
+          <div className="row two">
+            {proMode && (
+              <button type="button" className="ghost" onClick={onApplyOversizeLargeMode}>
+                大圖模式繼續
+              </button>
+            )}
             <button type="button" className="ghost" onClick={onDismissOversizePlan}>
-              取消本次超限轉換
+              略過上限
             </button>
           </div>
         </div>
       )}
 
-      {largeGridMode && pdfPagination && pdfPagination.totalTiles > 1 && (
-        <div className="pdf-nav-box">
-          <strong>大圖分塊編輯</strong>
-          <div className="hint">全圖可看整體構圖；選擇分塊後可放大查看色號並編輯。</div>
-          <div className="row three">
-            <button type="button" className={largeViewTilePage === 0 ? 'primary' : 'ghost'} onClick={() => onLargeViewTilePageChange(0)}>
-              全圖
-            </button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => onLargeViewTilePageChange(pdfJumpPage)}
-              disabled={pdfJumpPage <= 0 || pdfJumpPage > pdfPagination.totalTiles}
-            >
-              切到跳轉頁
-            </button>
-            <div className="hint">當前：{largeViewTilePage > 0 ? `分塊 #${largeViewTilePage}` : '全圖'}</div>
-          </div>
-          {largeViewTilePage === 0 && (
-            <div className="oversize-box">
-              <div className="hint">目前在全圖模式，色號顯示會簡化。建議切到分塊編輯以檢視色號。</div>
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  if (!pdfPagination.tiles.length) return;
-                  onLargeViewTilePageChange(pdfPagination.tiles[0].pageNo);
-                }}
-              >
-                切到第一塊
-              </button>
-            </div>
-          )}
-          <div className="tile-thumb-list">
-            {pdfPagination.tiles.map((tile) => {
-              const active = largeViewTilePage === tile.pageNo;
-              return (
-                <button
-                  key={`edit-tile-${tile.pageNo}`}
-                  type="button"
-                  className={`tile-thumb ${active ? 'is-jump' : ''}`.trim()}
-                  onClick={() => onLargeViewTilePageChange(tile.pageNo)}
-                >
-                  {pdfTileThumbMap.get(tile.pageNo) && (
-                    <img src={pdfTileThumbMap.get(tile.pageNo)} alt={`edit-page-${tile.pageNo}`} className="tile-thumb-img" />
-                  )}
-                  <span>編輯 #{tile.pageNo}</span>
-                  <small>X {tile.startCol + 1}-{tile.startCol + tile.colsPart}</small>
-                  <small>Y {tile.startRow + 1}-{tile.startRow + tile.rowsPart}</small>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </>
   );
 }

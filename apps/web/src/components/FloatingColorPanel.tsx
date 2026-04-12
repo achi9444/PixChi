@@ -6,9 +6,37 @@ export const EMPTY_EDIT_COLOR = { name: '無', hex: '#FFFFFF' };
 
 type ColorInfo = { name: string; hex: string };
 
+type GroupOption = { name: string };
+
+type CrossRefGroup = { name: string; colors: ColorInfo[] };
+
+function hexToRgbArr(hex: string): [number, number, number] {
+  const h = hex.replace('#', '').padEnd(6, '0');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+}
+
+function findNearest(hex: string, colors: ColorInfo[]): ColorInfo | null {
+  if (!colors.length) return null;
+  const [r, g, b] = hexToRgbArr(hex);
+  let best = colors[0];
+  let bestD = Infinity;
+  for (const c of colors) {
+    const [cr, cg, cb] = hexToRgbArr(c.hex);
+    const d = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2;
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  return best;
+}
+
 type FloatingColorPanelProps = {
   visible: boolean;
   onClose: () => void;
+  // palette group switch
+  groups: GroupOption[];
+  activeGroupName: string;
+  hasCanvas: boolean;
+  onGroupChange: (name: string) => void;
+  onApplyPalette: () => void;
   // focus color / mask
   focusMaskEnabled: boolean;
   onFocusMaskEnabledChange: (v: boolean) => void;
@@ -42,10 +70,13 @@ type FloatingColorPanelProps = {
   onAddOneCellOutline: () => void;
   zIndex?: number;
   onBringToFront?: () => void;
+  // cross-ref（畫布顏色對照）
+  crossRefGroups?: CrossRefGroup[];
+  canvasColors?: ColorInfo[];  // 目前畫布用到的顏色
 };
 
-const getDefaultPos = () => ({ x: 108, y: Math.max(160, window.innerHeight - 420) });
-const DEFAULT_SIZE = { w: 256, h: 360 };
+const getDefaultPos = () => ({ x: 108, y: Math.max(80, window.innerHeight - 580) });
+const DEFAULT_W = 256;
 const MIN_W = 220, MAX_W = 400, MIN_H = 200;
 
 /** Renders a dropdown menu via portal so it escapes overflow containers */
@@ -77,6 +108,11 @@ function PortalDropdown({ anchorRef, children }: { anchorRef: React.RefObject<HT
 export default function FloatingColorPanel({
   visible,
   onClose,
+  groups,
+  activeGroupName,
+  hasCanvas,
+  onGroupChange,
+  onApplyPalette,
   focusMaskEnabled,
   onFocusMaskEnabledChange,
   focusColorName,
@@ -94,6 +130,7 @@ export default function FloatingColorPanel({
   onClearConstructionFocus,
   onFocusNeighborEnabledChange,
   onFocusNeighborDeltaEChange,
+  editColorName,
   editColorMenuOpen,
   colorMenuRef,
   selectedEditColor,
@@ -106,21 +143,36 @@ export default function FloatingColorPanel({
   onAddOneCellOutline,
   zIndex,
   onBringToFront,
+  crossRefGroups,
+  canvasColors,
 }: FloatingColorPanelProps) {
   const [pos, setPos] = useState(getDefaultPos);
-  const [size, setSize] = useState(DEFAULT_SIZE);
+  const [panelW, setPanelW] = useState(DEFAULT_W);
+  const [panelH, setPanelH] = useState<number | 'auto'>('auto');
   const [minimized, setMinimized] = useState(false);
+  const [crossRefOpen, setCrossRefOpen] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
   const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const editTriggerRef = useRef<HTMLDivElement | null>(null);
   const focusTriggerRef = useRef<HTMLDivElement | null>(null);
+  const focusSelectedItemRef = useRef<HTMLButtonElement | null>(null);
+
+  // 開啟焦點色選單時，捲動至目前選取的顏色
+  useEffect(() => {
+    if (focusColorMenuOpen) {
+      requestAnimationFrame(() => {
+        focusSelectedItemRef.current?.scrollIntoView({ block: 'nearest' });
+      });
+    }
+  }, [focusColorMenuOpen]);
 
   // Reset position & size on close
   const handleClose = useCallback(() => {
     onClose();
     setPos(getDefaultPos);
-    setSize(DEFAULT_SIZE);
+    setPanelW(DEFAULT_W);
+    setPanelH('auto');
     setMinimized(false);
   }, [onClose]);
 
@@ -128,16 +180,15 @@ export default function FloatingColorPanel({
   const onResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    resizeRef.current = { startX: e.clientX, startY: e.clientY, startW: size.w, startH: size.h };
+    const curH = panelRef.current?.getBoundingClientRect().height ?? MIN_H;
+    resizeRef.current = { startX: e.clientX, startY: e.clientY, startW: panelW, startH: curH };
     const onMove = (ev: MouseEvent) => {
       if (!resizeRef.current) return;
       const dw = ev.clientX - resizeRef.current.startX;
       const dh = ev.clientY - resizeRef.current.startY;
-      const maxH = window.innerHeight * 0.8;
-      setSize({
-        w: Math.max(MIN_W, Math.min(MAX_W, resizeRef.current.startW + dw)),
-        h: Math.max(MIN_H, Math.min(maxH, resizeRef.current.startH + dh)),
-      });
+      const maxH = window.innerHeight * 0.9;
+      setPanelW(Math.max(MIN_W, Math.min(MAX_W, resizeRef.current.startW + dw)));
+      setPanelH(Math.max(MIN_H, Math.min(maxH, resizeRef.current.startH + dh)));
     };
     const onUp = () => {
       resizeRef.current = null;
@@ -146,7 +197,7 @@ export default function FloatingColorPanel({
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  }, [size]);
+  }, [panelW]);
 
   // Drag handling
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -213,7 +264,7 @@ export default function FloatingColorPanel({
   }
 
   return (
-    <div className="floating-panel" ref={panelRef} style={{ left: pos.x, top: pos.y, width: size.w, height: size.h, zIndex: zIndex ?? 500 }}>
+    <div className="floating-panel" ref={panelRef} style={{ left: pos.x, top: pos.y, width: panelW, height: panelH, zIndex: zIndex ?? 500 }}>
       {/* Title bar — draggable */}
       <div className="floating-panel-titlebar" onMouseDown={onDragStart}>
         <span className="floating-panel-title">修色面板</span>
@@ -229,9 +280,23 @@ export default function FloatingColorPanel({
 
       {/* Content */}
       <div className="floating-panel-body">
+        {/* Palette group selector */}
+        <div className="inline-field" style={{ marginBottom: 8 }}>
+          <span style={{ fontSize: 12, whiteSpace: 'nowrap' }}>目前色庫</span>
+          <select
+            value={activeGroupName}
+            onChange={(e) => onGroupChange(e.target.value)}
+            style={{ flex: 1, fontSize: 12, minWidth: 0 }}
+          >
+            {groups.map((g) => (
+              <option key={g.name} value={g.name}>{g.name}</option>
+            ))}
+          </select>
+        </div>
+        <hr style={{ margin: '0 0 8px' }} />
         {/* Focus color dropdown */}
-        <label>
-          <span className="floating-label-row">
+        <div>
+          <span className="floating-label-row" style={{ display: 'block', marginBottom: 4 }}>
             焦點色
             {selectedFocusColor && <span className="color-pill tiny" style={{ color: selectedFocusColor.hex }} />}
           </span>
@@ -253,6 +318,9 @@ export default function FloatingColorPanel({
                   onFocusColorSearchChange('');
                 }}
               />
+              {selectedFocusColor && !constructionMode && (
+                <button type="button" className="ghost color-select-clear" title="清除焦點色" onClick={(e) => { e.stopPropagation(); onFocusColorNameChange(''); onFocusColorMenuOpenChange(false); onFocusColorSearchChange(''); }}>×</button>
+              )}
               <button type="button" className="ghost color-select-toggle" onClick={() => { if (!constructionMode) onFocusColorMenuOpenChange((v) => !v); }}>▾</button>
             </div>
             {focusColorMenuOpen && !constructionMode && (
@@ -261,7 +329,13 @@ export default function FloatingColorPanel({
                   清除焦點
                 </button>
                 {filteredFocusColors.map((c) => (
-                  <button key={c.name} type="button" className="color-select-option" onClick={() => { onFocusColorNameChange(c.name); onFocusColorMenuOpenChange(false); onFocusColorSearchChange(''); }}>
+                  <button
+                    key={c.name}
+                    ref={c.name === focusColorName ? focusSelectedItemRef : null}
+                    type="button"
+                    className={`color-select-option${c.name === focusColorName ? ' selected' : ''}`}
+                    onClick={() => { onFocusColorNameChange(c.name); onFocusColorMenuOpenChange(false); onFocusColorSearchChange(''); }}
+                  >
                     <span className="color-pill tiny" style={{ color: c.hex }} />
                     <span>{c.name}</span>
                   </button>
@@ -269,7 +343,7 @@ export default function FloatingColorPanel({
               </PortalDropdown>
             )}
           </div>
-        </label>
+        </div>
         {constructionMode && (
           <div className="hint" style={{ marginBottom: 4 }}>施工模式中，焦點色由任務選取與取色工具控制。</div>
         )}
@@ -300,8 +374,8 @@ export default function FloatingColorPanel({
         <hr style={{ margin: '8px 0' }} />
 
         {/* Edit color */}
-        <label>
-          <span className="floating-label-row">
+        <div>
+          <span className="floating-label-row" style={{ display: 'block', marginBottom: 4 }}>
             編輯色（畫筆/替換）
             {selectedEditColor && <span className="color-pill tiny" style={{ color: selectedEditColor.hex }} />}
           </span>
@@ -345,15 +419,133 @@ export default function FloatingColorPanel({
               </PortalDropdown>
             )}
           </div>
-        </label>
+        </div>
 
         <div className="row two" style={{ marginTop: 8 }}>
           <button className="ghost" onClick={onReplaceAllSameColor} title="將焦點色全部替換為選取色">全替換</button>
           <button className="ghost" onClick={onAddOneCellOutline} title="加外框（1格）">加外框</button>
         </div>
+
+        {/* 色號對照表按鈕 */}
+        {crossRefGroups && crossRefGroups.length > 1 && canvasColors && canvasColors.length > 0 && (
+          <button
+            type="button"
+            className="ghost"
+            style={{ width: '100%', marginTop: 6, fontSize: 12 }}
+            onClick={() => setCrossRefOpen(true)}
+            title="查看畫布所有顏色在各色庫的對應色號"
+          >
+            色號對照表
+          </button>
+        )}
       </div>
       {/* Resize handle */}
       <div className="floating-panel-resize" onMouseDown={onResizeStart} />
+
+      {/* 色號對照表 Modal */}
+      {crossRefOpen && crossRefGroups && canvasColors && createPortal(
+        <CrossRefModal
+          canvasColors={canvasColors}
+          groups={crossRefGroups}
+          activeGroupName={activeGroupName}
+          onClose={() => setCrossRefOpen(false)}
+        />,
+        document.body
+      )}
+    </div>
+  );
+}
+
+/* ── 色號對照表 Modal ─────────────────────────────────── */
+type CrossRefModalProps = {
+  canvasColors: ColorInfo[];
+  groups: CrossRefGroup[];
+  activeGroupName: string;
+  onClose: () => void;
+};
+
+function CrossRefModal({ canvasColors, groups, activeGroupName, onClose }: CrossRefModalProps) {
+  const otherGroups = groups.filter((g) => g.name !== activeGroupName);
+
+  const [pos, setPos] = useState(() => ({
+    x: Math.max(40, window.innerWidth / 2 - 380),
+    y: Math.max(40, window.innerHeight / 2 - 280),
+  }));
+  const dragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number } | null>(null);
+
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startY: e.clientY, startPosX: pos.x, startPosY: pos.y };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      setPos({
+        x: dragRef.current.startPosX + ev.clientX - dragRef.current.startX,
+        y: dragRef.current.startPosY + ev.clientY - dragRef.current.startY,
+      });
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [pos]);
+
+  // ESC 關閉
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return (
+    <div
+      className="crossref-modal"
+      style={{ position: 'fixed', left: pos.x, top: pos.y }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="crossref-modal-header" onMouseDown={onDragStart} style={{ cursor: 'grab' }}>
+        <span className="crossref-modal-title">色號對照表</span>
+        <button type="button" className="floating-panel-btn" onClick={onClose} title="關閉">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div className="crossref-modal-body">
+        <table className="crossref-modal-table">
+          <thead>
+            <tr>
+              <th className="crossref-th crossref-th-current">目前色號（{activeGroupName}）</th>
+              {otherGroups.map((g) => (
+                <th key={g.name} className="crossref-th">{g.name}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {canvasColors.map((color) => (
+              <tr key={color.name} className="crossref-tr">
+                <td className="crossref-td crossref-td-current">
+                  <span className="color-pill tiny" style={{ color: color.hex }} />
+                  {color.name}
+                </td>
+                {otherGroups.map((g) => {
+                  const nearest = findNearest(color.hex, g.colors);
+                  return (
+                    <td key={g.name} className="crossref-td">
+                      {nearest && (
+                        <>
+                          <span className="color-pill tiny" style={{ color: nearest.hex }} />
+                          {nearest.name}
+                        </>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

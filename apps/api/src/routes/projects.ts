@@ -156,6 +156,12 @@ projectsRouter.put('/:id/save', async (req, res, next) => {
           updatedAt: at
         }
       });
+      // 自動存檔只保留最後一筆，存入前先刪除舊的 autosave
+      if (input.reason === 'autosave') {
+        await tx.projectVersion.deleteMany({
+          where: { projectId: found.id, reason: 'autosave' }
+        });
+      }
       const v = await tx.projectVersion.create({
         data: {
           projectId: found.id,
