@@ -209,8 +209,10 @@ export type LeftSidebarProps = {
   colorPanelVisible: boolean;
   mergeThreshold: number;
   onMergeThresholdChange: (v: number) => void;
-  mergeGroups: { rep: { name: string; hex: string; count: number }; merged: { name: string; hex: string; count: number }[] }[];
+  mergeGroups: { autoRepName: string; rep: { name: string; hex: string; count: number }; merged: { name: string; hex: string; count: number }[] }[];
   onMergeSimilarColors: () => void;
+  onMergeSingle: (repName: string, repHex: string, mergedName: string) => void;
+  onMergeExclude: (autoRepName: string, excludeName: string) => void;
   onFlipHorizontal: () => void;
 };
 
@@ -1000,7 +1002,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
               <table className="merge-popover-table">
                 <tbody>
                   {props.mergeGroups.slice(0, 10).map((g) => (
-                    <tr key={g.rep.name}>
+                    <tr key={g.autoRepName}>
                       <td className="merge-popover-td-rep">
                         <span className="color-pill" style={{ color: g.rep.hex }} />
                         <span className="merge-popover-rep">{g.rep.name}</span>
@@ -1009,8 +1011,25 @@ export default function LeftSidebar(props: LeftSidebarProps) {
                       <td className="merge-popover-td-sources">
                         {g.merged.map((m) => (
                           <span key={m.name} className="merge-popover-source">
-                            <span className="color-pill tiny" style={{ color: m.hex }} />
-                            {m.name}
+                            <span
+                              className="color-pill tiny merge-popover-source-pill"
+                              style={{ color: m.hex }}
+                              title={`立刻將 ${m.name} 合入 ${g.rep.name}`}
+                              onClick={() => props.onMergeSingle(g.rep.name, g.rep.hex, m.name)}
+                            />
+                            <span
+                              className="merge-popover-source-name"
+                              title={`立刻將 ${m.name} 合入 ${g.rep.name}`}
+                              onClick={() => props.onMergeSingle(g.rep.name, g.rep.hex, m.name)}
+                            >
+                              {m.name}
+                            </span>
+                            <button
+                              className="merge-popover-exclude-btn"
+                              title={`排除 ${m.name}，不合併`}
+                              type="button"
+                              onClick={() => props.onMergeExclude(g.autoRepName, m.name)}
+                            >✕</button>
                           </span>
                         ))}
                       </td>
@@ -1029,7 +1048,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
               type="button"
               onClick={() => { props.onMergeSimilarColors(); setMergePopoverOpen(false); }}
             >
-              執行合併
+              全部合併
             </button>
           </>
         ) : (

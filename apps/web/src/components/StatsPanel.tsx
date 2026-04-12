@@ -37,6 +37,8 @@ type Props = {
   onProMarginChange: (v: number) => void;
   onFindSimilarColors: (colorName: string) => SimilarColor[];
   onReplaceColorDirect: (fromName: string, toName: string) => void;
+  focusColorName: string;
+  onFocusColorChange: (name: string) => void;
 };
 
 export default function StatsPanel({
@@ -66,6 +68,8 @@ export default function StatsPanel({
   onProMarginChange,
   onFindSimilarColors,
   onReplaceColorDirect,
+  focusColorName,
+  onFocusColorChange,
 }: Props) {
   const [costOpen, setCostOpen] = useState(false);
   const [similarPopover, setSimilarPopover] = useState<{ name: string; candidates: SimilarColor[] } | null>(null);
@@ -201,10 +205,16 @@ export default function StatsPanel({
               <th></th>
             </tr>
           </thead>
-          <tbody>
+          <tbody onClick={(e) => { if ((e.target as HTMLElement).closest('tr.stats-color-row') === null) onFocusColorChange(''); }}>
             {filteredStatsRows.map((r) => (
               <>
-                <tr key={r.name}>
+                <tr
+                  key={r.name}
+                  className={`stats-color-row${focusColorName === r.name ? ' focused' : ''}`}
+                  onClick={() => onFocusColorChange(focusColorName === r.name ? '' : r.name)}
+                  title={focusColorName === r.name ? '點擊取消焦點' : '點擊設為焦點色'}
+                  style={{ cursor: 'pointer' }}
+                >
                   <td>
                     <span className="color-pill" style={{ color: r.hex }} />
                     {r.name}

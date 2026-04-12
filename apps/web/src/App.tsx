@@ -413,6 +413,7 @@ export default function App() {
   const [focusNeighborDeltaE, setFocusNeighborDeltaE] = useState(10);
   const [statsSearch, setStatsSearch] = useState('');
   const [mergeThreshold, setMergeThreshold] = useState(3);
+  const [mergeOverrides, setMergeOverrides] = useState<Record<string, { excluded?: string[] }>>({});
   const [proUnitCost, setProUnitCost] = useState(PUBLIC_PRICING_PRESET.unitCost);
   const [proLossRate, setProLossRate] = useState(PUBLIC_PRICING_PRESET.lossRate);
   const [proHourlyRate, setProHourlyRate] = useState(160);
@@ -625,9 +626,21 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       .map(members => {
         const rep = statsRows[members[0]];
         const merged = members.slice(1).map(i => ({ name: statsRows[i].name, hex: statsRows[i].hex, count: statsRows[i].count }));
-        return { rep: { name: rep.name, hex: rep.hex, count: rep.count }, merged };
+        return { autoRepName: rep.name, rep: { name: rep.name, hex: rep.hex, count: rep.count }, merged };
       });
   }, [statsRows, mergeThreshold]);
+
+  // 套用用戶覆蓋（排除某色）
+  const effectiveMergeGroups = useMemo(() => {
+    return mergeGroups.flatMap(g => {
+      const ov = mergeOverrides[g.autoRepName];
+      if (!ov?.excluded?.length) return [g];
+      const excluded = new Set(ov.excluded);
+      const merged = g.merged.filter(m => !excluded.has(m.name));
+      if (!merged.length) return [];
+      return [{ ...g, merged }];
+    });
+  }, [mergeGroups, mergeOverrides]);
 
   const focusVisibleNameSet = useMemo(() => {
     if (!focusColorName || !focusNeighborEnabled || !selectedFocusColor) return null;
@@ -1673,6 +1686,22 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     return () => window.removeEventListener('mousedown', onPointerDown);
   }, []);
 
+  // 點任意空白處取消焦點色
+  useEffect(() => {
+    const onDocClick = (ev: MouseEvent) => {
+      const target = ev.target as HTMLElement;
+      if (!target) return;
+      // 保留焦點：焦點色選單、修色面板、統計色號列、取色工具點畫布
+      if (target.closest('.stats-color-row')) return;
+      if (target.closest('.floating-panel')) return;
+      if (target.closest('.color-select-menu-portal')) return;
+      if (target === canvasRef.current && editTool === 'picker') return;
+      setFocusColorName('');
+    };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, [editTool]);
+
   const drawGrid = useCallback(() => {
     const canvas = canvasRef.current;
     const wrap = canvasWrapRef.current;
@@ -1936,6 +1965,15 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       ctx.fillRect(ox - RULER, oy, RULER, gridPxH);
       ctx.fillRect(rightX, oy, RULER, gridPxH);
       ctx.fillRect(ox, bottomY, gridPxW, RULER);
+      // 尺規與畫布交界線
+      ctx.strokeStyle = '#a0b4ac';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(ox, oy + 0.5);        ctx.lineTo(ox + gridPxW, oy + 0.5);        // 上邊
+      ctx.moveTo(ox, bottomY + 0.5);   ctx.lineTo(ox + gridPxW, bottomY + 0.5);   // 下邊
+      ctx.moveTo(ox + 0.5, oy);        ctx.lineTo(ox + 0.5, oy + gridPxH);        // 左邊
+      ctx.moveTo(rightX + 0.5, oy);    ctx.lineTo(rightX + 0.5, oy + gridPxH);    // 右邊
+      ctx.stroke();
       // 格線（每格分隔）
       ctx.strokeStyle = '#c8d6d0';
       ctx.lineWidth = 0.5;
@@ -3346,9 +3384,9 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   }, [statsRows, activeGroup]);
 
   const mergeSimilarColors = useCallback(() => {
-    if (!converted || !mergeGroups.length) return;
+    if (!converted || !effectiveMergeGroups.length) return;
     const replaceMap = new Map<string, { name: string; hex: string }>();
-    for (const g of mergeGroups) {
+    for (const g of effectiveMergeGroups) {
       for (const m of g.merged) replaceMap.set(m.name, { name: g.rep.name, hex: g.rep.hex });
     }
     if (!replaceMap.size) return;
@@ -3366,7 +3404,22 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     pushUndo(changes, `合併相近色（閾值 ${mergeThreshold}，合併 ${mergeCount} 色，${changes.length} 格）`);
     setConverted({ ...converted, cells: nextCells });
     setStatusText(`已合併 ${mergeCount} 種相近色，影響 ${changes.length} 格。`);
-  }, [converted, mergeGroups, mergeThreshold, pushUndo]);
+  }, [converted, effectiveMergeGroups, mergeThreshold, pushUndo]);
+
+  const mergeSingleColor = useCallback((repName: string, repHex: string, mergedName: string) => {
+    if (!converted) return;
+    const changes: CellChange[] = [];
+    const nextCells = converted.cells.map((cell, idx) => {
+      if (cell.isEmpty || cell.colorName !== mergedName) return cell;
+      const after = { ...cell, colorName: repName, hex: repHex };
+      changes.push({ idx, before: { ...cell }, after });
+      return after;
+    });
+    if (!changes.length) { setStatusText('無需合併。'); return; }
+    pushUndo(changes, `合併 ${mergedName} → ${repName}（${changes.length} 格）`);
+    setConverted({ ...converted, cells: nextCells });
+    setStatusText(`已將 ${mergedName} 合併為 ${repName}，影響 ${changes.length} 格。`);
+  }, [converted, pushUndo]);
 
   const addOneCellOutline = () => {
     if (!converted || !activeGroup || !editColorName) return;
@@ -4565,9 +4618,11 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onConstructionPanelToggle={() => { setConstructionPanelVisible((v) => !v); bringPanelToFront('construction'); }}
           colorPanelVisible={colorPanelVisible}
           mergeThreshold={mergeThreshold}
-          onMergeThresholdChange={setMergeThreshold}
-          mergeGroups={mergeGroups}
+          onMergeThresholdChange={(v) => { setMergeThreshold(v); setMergeOverrides({}); }}
+          mergeGroups={effectiveMergeGroups}
           onMergeSimilarColors={mergeSimilarColors}
+          onMergeSingle={mergeSingleColor}
+          onMergeExclude={(autoRepName, excludeName) => setMergeOverrides(prev => { const ex = prev[autoRepName] ?? {}; return { ...prev, [autoRepName]: { ...ex, excluded: [...(ex.excluded ?? []), excludeName] } }; })}
           onFlipHorizontal={flipHorizontal}
         />
 
@@ -4703,6 +4758,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onProMarginChange={setProMargin}
           onFindSimilarColors={findSimilarColorsFor}
           onReplaceColorDirect={replaceColorDirect}
+          focusColorName={focusColorName}
+          onFocusColorChange={setFocusColorName}
         />
       </main>
       )}
@@ -5068,6 +5125,15 @@ function buildExportGridCanvas(
     const rightX = ox + gridW;
     const bottomY = oy + gridH;
     const midBand = Math.floor(rulerBand / 2);
+    // 尺規與畫布交界線
+    ctx.strokeStyle = '#a0b4ac';
+    ctx.lineWidth = Math.max(1, exportScale);
+    ctx.beginPath();
+    ctx.moveTo(ox, oy + 0.5);        ctx.lineTo(ox + gridW, oy + 0.5);
+    ctx.moveTo(ox, bottomY + 0.5);   ctx.lineTo(ox + gridW, bottomY + 0.5);
+    ctx.moveTo(ox + 0.5, oy);        ctx.lineTo(ox + 0.5, oy + gridH);
+    ctx.moveTo(rightX + 0.5, oy);    ctx.lineTo(rightX + 0.5, oy + gridH);
+    ctx.stroke();
     // 格線（每格分隔）
     ctx.strokeStyle = '#c8d6d0';
     ctx.lineWidth = Math.max(0.5, exportScale * 0.5);

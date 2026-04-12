@@ -954,6 +954,11 @@ hr {
   color: var(--ink);
 }
 
+.merge-popover-table tbody tr:hover td {
+  background: transparent;
+  color: inherit;
+}
+
 .merge-popover-source {
   display: inline-flex;
   align-items: center;
@@ -962,6 +967,37 @@ hr {
   font-size: 11px;
   margin-right: 4px;
   white-space: nowrap;
+  cursor: pointer;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  padding: 0 2px;
+  transition: border-color 0.1s;
+}
+.merge-popover-source:hover {
+  border-color: var(--line);
+}
+
+.merge-popover-source-pill,
+.merge-popover-source-name {
+  cursor: pointer;
+}
+
+.merge-popover-exclude-btn {
+  all: unset;
+  cursor: pointer;
+  color: var(--faint);
+  font-size: 9px;
+  line-height: 1;
+  padding: 0 1px;
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+}
+.merge-popover-source:hover .merge-popover-exclude-btn {
+  opacity: 1;
+}
+.merge-popover-exclude-btn:hover {
+  color: var(--danger, #e55);
 }
 
 .merge-popover-more {
@@ -983,7 +1019,9 @@ hr {
   border: 1px solid var(--line);
   border-radius: 12px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.28);
-  width: min(88vw, 820px);
+  width: fit-content;
+  min-width: 280px;
+  max-width: min(88vw, 820px);
   max-height: 78vh;
   display: flex;
   flex-direction: column;
@@ -1025,7 +1063,7 @@ hr {
 }
 
 .crossref-modal-table {
-  width: 100%;
+  width: auto;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -2305,6 +2343,14 @@ tbody tr:hover td {
 }
 
 /* ── Stats similar color popover ───────────────────────── */
+.stats-color-row:hover {
+  background: var(--hover);
+}
+.stats-color-row.focused {
+  background: var(--primary-light, #fff3eb);
+  outline: 1px solid var(--primary);
+}
+
 .stats-similar-btn {
   padding: 0;
   width: 20px;
