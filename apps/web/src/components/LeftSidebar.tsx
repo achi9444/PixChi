@@ -102,6 +102,9 @@ export type LeftSidebarProps = {
   onApplyOversizeLargeMode: () => void;
   onDismissOversizePlan: () => void;
   gridSoftLimit: number;
+  onStartTracing: () => void;
+  tracingOpacity: number;
+  onTracingOpacityChange: (v: number) => void;
 
   // 顯示設定（施工 tab 中）
   showCode: boolean;
@@ -191,8 +194,10 @@ export type LeftSidebarProps = {
   onRedo: () => void;
   hasImageBitmap: boolean;
   // Tool params
-  brushSize: number;
-  onBrushSizeChange: (v: number) => void;
+  paintBrushSize: number;
+  onPaintBrushSizeChange: (v: number) => void;
+  eraseBrushSize: number;
+  onEraseBrushSizeChange: (v: number) => void;
   bucketMode: 'global' | 'region';
   onBucketModeChange: (v: 'global' | 'region') => void;
   // Crop tool
@@ -734,6 +739,9 @@ export default function LeftSidebar(props: LeftSidebarProps) {
     onApplyOversizeLargeMode: props.onApplyOversizeLargeMode,
     onDismissOversizePlan: props.onDismissOversizePlan,
     gridSoftLimit: props.gridSoftLimit,
+    onStartTracing: props.onStartTracing,
+    tracingOpacity: props.tracingOpacity,
+    onTracingOpacityChange: props.onTracingOpacityChange,
   };
 
   return (
@@ -928,7 +936,7 @@ export default function LeftSidebar(props: LeftSidebarProps) {
         className="tool-param-popover"
         style={getPopoverStyle(toolParamOpen)}
       >
-        {(toolParamOpen === 'paint' || toolParamOpen === 'erase') && (
+        {toolParamOpen === 'paint' && (
           <>
             <span className="tool-param-label">筆刷大小</span>
             <input
@@ -936,9 +944,23 @@ export default function LeftSidebar(props: LeftSidebarProps) {
               className="tool-param-input"
               min={1}
               max={100}
-              value={props.brushSize}
-              onChange={(e) => props.onBrushSizeChange(Math.max(1, Math.min(100, Math.floor(Number(e.target.value) || 1))))}
-              aria-label="筆刷大小"
+              value={props.paintBrushSize}
+              onChange={(e) => props.onPaintBrushSizeChange(Math.max(1, Math.min(100, Math.floor(Number(e.target.value) || 1))))}
+              aria-label="畫筆大小"
+            />
+          </>
+        )}
+        {toolParamOpen === 'erase' && (
+          <>
+            <span className="tool-param-label">橡皮擦大小</span>
+            <input
+              type="number"
+              className="tool-param-input"
+              min={1}
+              max={100}
+              value={props.eraseBrushSize}
+              onChange={(e) => props.onEraseBrushSizeChange(Math.max(1, Math.min(100, Math.floor(Number(e.target.value) || 1))))}
+              aria-label="橡皮擦大小"
             />
           </>
         )}

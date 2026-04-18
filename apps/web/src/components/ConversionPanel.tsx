@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 type PdfTileInfo = {
   pageNo: number;
   px: number;
@@ -79,6 +81,10 @@ type ConversionPanelProps = {
   onApplyOversizeLargeMode: () => void;
   onDismissOversizePlan: () => void;
   gridSoftLimit: number;
+  // tracing mode
+  onStartTracing: () => void;
+  tracingOpacity: number;
+  onTracingOpacityChange: (v: number) => void;
 };
 
 function clampInt(value: number, min: number, max: number) {
@@ -113,7 +119,12 @@ export default function ConversionPanel({
   onApplyOversizeLargeMode,
   onDismissOversizePlan,
   gridSoftLimit,
+  onStartTracing,
+  tracingOpacity,
+  onTracingOpacityChange,
 }: ConversionPanelProps) {
+  const [selectedMode, setSelectedMode] = useState<'convert' | 'tracing'>('convert');
+  const isTracing = selectedMode === 'tracing';
   return (
     <>
       {imageBitmap && cropToolEnabled && (
@@ -121,6 +132,24 @@ export default function ConversionPanel({
           裁切：{cropRect?.w ?? imageBitmap.width}×{cropRect?.h ?? imageBitmap.height}（拖曳超出圖片邊界可補白邊）
         </div>
       )}
+
+      {/* ── 模式切換 ── */}
+      <div className="mode-toggle">
+        <button
+          className={`mode-toggle-btn${!isTracing ? ' active' : ''}`}
+          onClick={() => setSelectedMode('convert')}
+          type="button"
+        >
+          自動轉換
+        </button>
+        <button
+          className={`mode-toggle-btn${isTracing ? ' active' : ''}`}
+          onClick={() => setSelectedMode('tracing')}
+          type="button"
+        >
+          底稿描圖
+        </button>
+      </div>
 
       {/* ── 拼豆色庫 ── */}
       <label>
@@ -134,27 +163,59 @@ export default function ConversionPanel({
         </select>
       </label>
 
-      {/* ── 顏色合併強度 ── */}
-      <div className="inline-field">
-        <span>合併相近色</span>
-        <input
-          type="number"
-          min={0}
-          max={preMergeDeltaEMax}
-          step={0.5}
-          value={preMergeDeltaE}
-          onChange={(e) => onPreMergeDeltaEChange(Math.max(0, Math.min(preMergeDeltaEMax, Number(e.target.value) || 0)))}
-        />
-      </div>
-      <div className="hint">
-        0 = 不合色；數值越高，越多相近色合成一色，配色更簡潔。
-      </div>
+      {/* ── 顏色合併強度（僅自動轉換模式）── */}
+      {!isTracing && (
+        <>
+          <div className="inline-field">
+            <span>合併相近色</span>
+            <input
+              type="number"
+              min={0}
+              max={preMergeDeltaEMax}
+              step={0.5}
+              value={preMergeDeltaE}
+              onChange={(e) => onPreMergeDeltaEChange(Math.max(0, Math.min(preMergeDeltaEMax, Number(e.target.value) || 0)))}
+            />
+          </div>
+          <div className="hint">
+            0 = 不合色；數值越高，越多相近色合成一色，配色更簡潔。
+          </div>
+        </>
+      )}
+
+      {/* ── 底稿透明度（僅底稿描圖模式）── */}
+      {isTracing && (
+        <>
+          <div className="inline-field">
+            <span>底稿透明度</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={Math.round(tracingOpacity * 100)}
+              onChange={(e) => onTracingOpacityChange(Number(e.target.value) / 100)}
+              style={{ flex: 1 }}
+            />
+            <span style={{ minWidth: 36, textAlign: 'right' }}>{Math.round(tracingOpacity * 100)}%</span>
+          </div>
+          <div className="hint">
+            底稿圖片顯示於格子下層，方便對照描繪。匯出時不含底稿。
+          </div>
+        </>
+      )}
 
       {/* ── 主要操作按鈕 ── */}
       <div className="row two">
-        <button className="primary" onClick={onConvert} disabled={convertProgress.running || !paletteReady} title={!paletteReady ? '色庫載入中…' : undefined}>
-          {!paletteReady ? '載入中…' : '開始轉換'}
-        </button>
+        {isTracing ? (
+          <button className="primary" onClick={onStartTracing} disabled={!imageBitmap}>
+            開始描圖
+          </button>
+        ) : (
+          <button className="primary" onClick={onConvert} disabled={convertProgress.running || !paletteReady} title={!paletteReady ? '色庫載入中…' : undefined}>
+            {!paletteReady ? '載入中…' : '開始轉換'}
+          </button>
+        )}
         <button className="ghost" onClick={onResetAll}>
           清空結果
         </button>

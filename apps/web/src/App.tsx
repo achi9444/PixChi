@@ -372,7 +372,9 @@ export default function App() {
       setGridCropRect(null);
     }
   };
-  const [brushSize, setBrushSize] = useState(1);
+  const [paintBrushSize, setPaintBrushSize] = useState(1);
+  const [eraseBrushSize, setEraseBrushSize] = useState(1);
+  const middlePanPrevToolRef = useRef<'pan' | 'paint' | 'erase' | 'bucket' | 'picker' | null>(null);
   const [bucketMode, setBucketMode] = useState<'global' | 'region'>('global');
   const [zoom, setZoom] = useState(1);
   const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
@@ -454,6 +456,9 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   const [largeGridMode, setLargeGridMode] = useState(false);
   const [largeViewTilePage, setLargeViewTilePage] = useState(0);
   const [largeOperationScope, setLargeOperationScope] = useState<'tile' | 'all'>('tile');
+  const [tracingMode, setTracingMode] = useState(false);
+  const [tracingOpacity, setTracingOpacity] = useState(0.4);
+  const [tracingSourceBitmap, setTracingSourceBitmap] = useState<ImageBitmap | null>(null);
   const [constructionMode, setConstructionMode] = useState(false);
   const [constructionStrategy, setConstructionStrategy] = useState<'block' | 'color'>('block');
   const [constructionShowDoneOverlay, setConstructionShowDoneOverlay] = useState(true);
@@ -1492,6 +1497,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         setActiveDraftVersionId(versionId ?? '');
         setLastSavedAt(Date.now());
         lastSavedFingerprintRef.current = buildDraftFingerprint(snapshot);
+        setTracingMode(false);
+        setTracingSourceBitmap(null);
         setDraftLoadAt(Date.now());
         setStatusText(versionId ? '已還原到指定版本。' : '草稿載入完成。');
       } catch (err) {
@@ -1691,10 +1698,11 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     const onDocClick = (ev: MouseEvent) => {
       const target = ev.target as HTMLElement;
       if (!target) return;
-      // 保留焦點：焦點色選單、修色面板、統計色號列、取色工具點畫布
+      // 保留焦點：焦點色選單、修色面板、統計色號列、取色工具點畫布、施工面板
       if (target.closest('.stats-color-row')) return;
       if (target.closest('.floating-panel')) return;
       if (target.closest('.color-select-menu-portal')) return;
+      if (target.closest('.construction-box')) return;
       if (target === canvasRef.current && editTool === 'picker') return;
       setFocusColorName('');
     };
@@ -1816,6 +1824,15 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, height);
+
+    if (tracingMode && tracingSourceBitmap) {
+      ctx.save();
+      ctx.globalAlpha = tracingOpacity;
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(tracingSourceBitmap, ox, oy, gridW, gridH);
+      ctx.restore();
+    }
+
     const fullTotal = converted.cols * converted.rows;
     // fastRender：大圖全圖模式下略去格線與色號以提升效能；但縮放到格子夠大時仍顯示色號
     const fastRender = largeGridMode && fullTotal > GRID_SOFT_LIMIT && !selectedLargeTile && cell < 16;
@@ -1836,13 +1853,15 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       const isDimmed = showConstruction && constructionCurrentCellSet.size > 0
         ? !c.isEmpty && !constructionCurrentCellSet.has(srcIdx)
         : focusMaskEnabled && hasFocus && !c.isEmpty && !focusMatch;
-      ctx.fillStyle = c.hex;
-      if (beadCircleMode) {
-        ctx.beginPath();
-        ctx.arc(x + cell / 2, y + cell / 2, cell * 0.42, 0, Math.PI * 2);
-        ctx.fill();
-      } else {
-        ctx.fillRect(x, y, cell, cell);
+      if (!(tracingMode && c.isEmpty)) {
+        ctx.fillStyle = c.hex;
+        if (beadCircleMode) {
+          ctx.beginPath();
+          ctx.arc(x + cell / 2, y + cell / 2, cell * 0.42, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.fillRect(x, y, cell, cell);
+        }
       }
       if (isDimmed) {
         ctx.fillStyle = 'rgba(255, 255, 255, 0.80)';
@@ -2057,11 +2076,12 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     const hover = hoverCellRef.current;
     if (hover && converted && (editTool === 'paint' || editTool === 'erase')) {
       const meta = renderMetaRef.current;
-      const half = Math.floor((brushSize - 1) / 2);
+      const previewSize = editTool === 'erase' ? eraseBrushSize : paintBrushSize;
+      const half = Math.floor((previewSize - 1) / 2);
       const startCol = Math.max(0, hover.col - half);
       const startRow = Math.max(0, hover.row - half);
-      const endCol = Math.min(converted.cols - 1, hover.col - half + brushSize - 1);
-      const endRow = Math.min(converted.rows - 1, hover.row - half + brushSize - 1);
+      const endCol = Math.min(converted.cols - 1, hover.col - half + previewSize - 1);
+      const endRow = Math.min(converted.rows - 1, hover.row - half + previewSize - 1);
       const px = meta.ox + (startCol - meta.viewStartCol) * meta.cell;
       const py = meta.oy + (startRow - meta.viewStartRow) * meta.cell;
       const pw = (endCol - startCol + 1) * meta.cell;
@@ -2204,7 +2224,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       ctx.fillText(dimLabel, cropPx + cropPw / 2, cropPy + cropPh / 2);
       ctx.restore();
     }
-  }, [converted, imageBitmap, cropRect, cropToolEnabled, cropHoverMode, showCode, focusColorName, focusVisibleNameSet, focusMaskEnabled, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery, largeGridMode, selectedLargeTile, pdfPagination, constructionMode, constructionTasks.length, constructionShowDoneOverlay, constructionDoneCellSet, constructionCurrentCellSet, editTool, brushSize, selectedEditColor, gridCropRect, beadCircleMode, draftLoadAt]);
+  }, [converted, imageBitmap, cropRect, cropToolEnabled, cropHoverMode, showCode, focusColorName, focusVisibleNameSet, focusMaskEnabled, zoom, panOffset.x, panOffset.y, proMode, showGuide, showRuler, guideEvery, largeGridMode, selectedLargeTile, pdfPagination, constructionMode, constructionTasks.length, constructionShowDoneOverlay, constructionDoneCellSet, constructionCurrentCellSet, editTool, paintBrushSize, eraseBrushSize, selectedEditColor, gridCropRect, beadCircleMode, draftLoadAt, tracingMode, tracingOpacity, tracingSourceBitmap]);
 
   useEffect(() => {
     drawGrid();
@@ -2335,6 +2355,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setRedoStack([]);
     setHistoryItems([]);
     setLastPickedOldColor(null);
+    setTracingMode(false);
+    setTracingSourceBitmap(null);
   };
 
   const runConvert = async (options?: { overrideCols?: number; overrideRows?: number; allowOversize?: boolean; useLargeMode?: boolean }) => {
@@ -2439,6 +2461,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       });
       setCols(finalCols);
       setRows(finalRows);
+      setTracingMode(false);
+      setTracingSourceBitmap(null);
       setGridMeta(`格線：${finalCols} x ${finalRows} (fit)`);
       setUndoStack([]);
       setRedoStack([]);
@@ -2688,6 +2712,56 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     await runConvert();
   };
 
+  const initEmptyGrid = (finalCols: number, finalRows: number): Converted => {
+    const cells: Cell[] = [];
+    for (let r = 0; r < finalRows; r++)
+      for (let c = 0; c < finalCols; c++)
+        cells.push({ x: c, y: r, rgb: [255, 255, 255], colorName: '', hex: '#ffffff', isEmpty: true });
+    return { cols: finalCols, rows: finalRows, mode: 'tracing', sourceW: finalCols, sourceH: finalRows, processInfo: '底稿模式', cells };
+  };
+
+  const onStartTracing = async () => {
+    if (!imageBitmap) return;
+    let sourceBitmap = imageBitmap;
+    const hasCrop = !!cropRect && (cropRect.x !== 0 || cropRect.y !== 0 || cropRect.w !== imageBitmap.width || cropRect.h !== imageBitmap.height);
+    if (hasCrop && cropRect) {
+      const isOverflow = cropRect.x < 0 || cropRect.y < 0 || cropRect.x + cropRect.w > imageBitmap.width || cropRect.y + cropRect.h > imageBitmap.height;
+      if (isOverflow) {
+        const padCanvas = document.createElement('canvas');
+        padCanvas.width = cropRect.w;
+        padCanvas.height = cropRect.h;
+        const pctx = padCanvas.getContext('2d')!;
+        pctx.fillStyle = '#FFFFFF';
+        pctx.fillRect(0, 0, cropRect.w, cropRect.h);
+        pctx.drawImage(imageBitmap, -cropRect.x, -cropRect.y);
+        sourceBitmap = await createImageBitmap(padCanvas);
+      } else {
+        sourceBitmap = await createImageBitmap(imageBitmap, cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+      }
+    }
+    const safeCols = clampInt(cols, 1, MAX_GRID_SIZE);
+    const safeRows = clampInt(rows, 1, MAX_GRID_SIZE);
+    const dims = adjustGridByMode(safeCols, safeRows, sourceBitmap.width, sourceBitmap.height, undefined);
+    const finalCols = Math.max(1, Math.min(dims.cols, sourceBitmap.width));
+    const finalRows = Math.max(1, Math.min(dims.rows, sourceBitmap.height));
+    setTracingSourceBitmap(sourceBitmap);
+    setConverted(initEmptyGrid(finalCols, finalRows));
+    setCols(finalCols);
+    setRows(finalRows);
+    setTracingMode(true);
+    setUndoStack([]);
+    setRedoStack([]);
+    setHistoryItems([]);
+    setLastPickedOldColor(null);
+    setCropToolEnabled(false);
+    setZoom(1);
+    setPanOffset({ x: 0, y: 0 });
+    setOversizePlan(null);
+    setLargeGridMode(false);
+    setGridMeta(`格線：${finalCols} x ${finalRows} (底稿)`);
+    setStatusText('底稿模式：請用筆刷工具對照底圖描繪。');
+  };
+
   const addHistory = (text: string) => {
     setHistoryItems((prev) => [text, ...prev].slice(0, 8));
   };
@@ -2838,14 +2912,15 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
         : null;
     if (editTool === 'paint' && !isPaintToEmpty && !chosen) return;
 
-    const half = Math.floor((brushSize - 1) / 2);
+    const currentBrushSize = editTool === 'erase' ? eraseBrushSize : paintBrushSize;
+    const half = Math.floor((currentBrushSize - 1) / 2);
     const startX = centerX - half;
     const startY = centerY - half;
     const changes: CellChange[] = [];
     const nextCells = [...converted.cells];
 
-    for (let by = 0; by < brushSize; by++) {
-      for (let bx = 0; bx < brushSize; bx++) {
+    for (let by = 0; by < currentBrushSize; by++) {
+      for (let bx = 0; bx < currentBrushSize; bx++) {
         const x = startX + bx;
         const y = startY + by;
         if (x < 0 || y < 0 || x >= converted.cols || y >= converted.rows) continue;
@@ -2868,7 +2943,7 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     const firstBefore = changes[0].before;
     setLastPickedOldColor(editTool === 'paint' && !isPaintToEmpty && !firstBefore.isEmpty ? firstBefore.colorName : null);
     const toolLabel = editTool === 'erase' || isPaintToEmpty ? '橡皮擦' : '上色';
-    pushUndo(changes, `${toolLabel} ${brushSize}x${brushSize}（${changes.length} 格）`);
+    pushUndo(changes, `${toolLabel} ${currentBrushSize}x${currentBrushSize}（${changes.length} 格）`);
     setConverted({ ...converted, cells: nextCells });
   };
 
@@ -2994,6 +3069,16 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
   };
 
   const onCanvasMouseDown = (ev: React.MouseEvent<HTMLCanvasElement>) => {
+    if (ev.button === 1) {
+      ev.preventDefault();
+      if (middlePanPrevToolRef.current === null) {
+        middlePanPrevToolRef.current = editTool;
+        setEditTool('pan');
+        panLastPointRef.current = { x: ev.clientX, y: ev.clientY };
+        isPointerDownRef.current = true;
+      }
+      return;
+    }
     if (cropToolEnabled && imageBitmap && !converted) {
       const p = getPreviewPointer(ev.clientX, ev.clientY);
       if (!p) return;
@@ -3262,7 +3347,14 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     }
   };
 
-  const onCanvasMouseUp = () => {
+  const onCanvasMouseUp = (ev: React.MouseEvent<HTMLCanvasElement>) => {
+    if (ev.button === 1 && middlePanPrevToolRef.current !== null) {
+      setEditTool(middlePanPrevToolRef.current);
+      middlePanPrevToolRef.current = null;
+      isPointerDownRef.current = false;
+      panLastPointRef.current = null;
+      return;
+    }
     if (cropToolEnabled && imageBitmap && !converted) {
       isCropDraggingRef.current = false;
       cropDragStartRef.current = null;
@@ -3723,8 +3815,14 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       if (matchesShortcutSet(ev, effectiveShortcutConfig.toolBucket)) selectEditTool('bucket');
       if (matchesShortcutSet(ev, effectiveShortcutConfig.toolPicker)) selectEditTool('picker');
       if (matchesShortcutSet(ev, effectiveShortcutConfig.toggleCode)) setShowCode((v) => !v);
-      if (matchesShortcutSet(ev, effectiveShortcutConfig.brushDown)) setBrushSize((v) => Math.max(1, v - 1));
-      if (matchesShortcutSet(ev, effectiveShortcutConfig.brushUp)) setBrushSize((v) => Math.min(100, v + 1));
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.brushDown)) {
+        if (editTool === 'erase') setEraseBrushSize((v) => Math.max(1, v - 1));
+        else setPaintBrushSize((v) => Math.max(1, v - 1));
+      }
+      if (matchesShortcutSet(ev, effectiveShortcutConfig.brushUp)) {
+        if (editTool === 'erase') setEraseBrushSize((v) => Math.min(100, v + 1));
+        else setPaintBrushSize((v) => Math.min(100, v + 1));
+      }
       if (matchesShortcutSet(ev, effectiveShortcutConfig.zoomIn)) {
         ev.preventDefault();
         setZoom((v) => Math.min(8, Number((v + 0.1).toFixed(2))));
@@ -4136,6 +4234,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
       setUndoStack([]);
       setRedoStack([]);
       setHistoryItems([]);
+      setTracingMode(false);
+      setTracingSourceBitmap(null);
       setZoom(1);
       setPanOffset({ x: 0, y: 0 });
       setStatusText('已從 PDF 還原畫布。');
@@ -4166,6 +4266,8 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
     setOversizePlan(null);
     setLargeGridMode(false);
     setLargeViewTilePage(0);
+    setTracingMode(false);
+    setTracingSourceBitmap(null);
     setStatusText('已清空結果。');
   };
 
@@ -4502,6 +4604,9 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onApplyOversizeLargeMode={() => void runConvert({ allowOversize: true, useLargeMode: true })}
           onDismissOversizePlan={() => setOversizePlan(null)}
           gridSoftLimit={GRID_SOFT_LIMIT}
+          onStartTracing={() => void onStartTracing()}
+          tracingOpacity={tracingOpacity}
+          onTracingOpacityChange={setTracingOpacity}
           onCreateBlankCanvas={(opts) => createBlankCanvas(opts)}
           hasConverted={!!converted}
           projectName={projectName}
@@ -4592,8 +4697,10 @@ const [storageEstimateText, setStorageEstimateText] = useState('-');
           onUndo={undo}
           onRedo={redo}
           hasImageBitmap={!!imageBitmap}
-          brushSize={brushSize}
-          onBrushSizeChange={setBrushSize}
+          paintBrushSize={paintBrushSize}
+          onPaintBrushSizeChange={setPaintBrushSize}
+          eraseBrushSize={eraseBrushSize}
+          onEraseBrushSizeChange={setEraseBrushSize}
           bucketMode={bucketMode}
           onBucketModeChange={setBucketMode}
           onCropToolEnabledChange={(v) => {
